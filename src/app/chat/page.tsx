@@ -18,6 +18,8 @@ import {
   LoaderIcon,
 } from "lucide-react";
 import Link from "next/link";
+import { GlobeView, ArcData, MarkerData } from "@/components/Globe/GlobeView";
+import { resolveDataCenter } from "@/lib/datacenterLocations";
 
 interface Message {
   _id: string;
@@ -34,6 +36,11 @@ interface Conversation {
   updatedAt: string;
 }
 
+// Color used for the "you" marker and outbound arcs
+const USER_COLOR = "#60a5fa"; // blue
+// Color used for inbound (response) arcs
+const INBOUND_ARC_COLOR = "#f97316"; // orange
+
 export default function ChatPage() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -43,9 +50,35 @@ export default function ChatPage() {
   const [loadingMessages, setLoadingMessages] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
 
+  // Globe state
+  const [arcs, setArcs] = useState<ArcData[]>([]);
+  const [markers, setMarkers] = useState<MarkerData[]>([]);
+  const [userLocation, setUserLocation] = useState<{ lat: number; lng: number } | null>(null);
+
   // Load conversation list
   useEffect(() => {
     fetchConversations();
+  }, []);
+
+  // Fetch user geolocation on mount and place the "You" marker
+  useEffect(() => {
+    fetch("/api/geolocate")
+      .then((r) => r.json())
+      .then((data) => {
+        setUserLocation({ lat: data.lat, lng: data.lng });
+        setMarkers([
+          {
+            id: "user",
+            lat: data.lat,
+            lng: data.lng,
+            color: USER_COLOR,
+            label: `You${data.city ? ` — ${data.city}` : ""}`,
+            radius: 0.6,
+            pulse: true,
+          },
+        ]);
+      })
+      .catch(() => {});
   }, []);
 
   // Load messages when active conversation changes
@@ -92,6 +125,40 @@ export default function ChatPage() {
       { _id: tempId, role: "user", content: text, createdAt: new Date().toISOString() },
     ]);
 
+    // ── Globe: outbound arc (user → data center) ─────────────────────────────
+    const datacenter = resolveDataCenter("gpt-4o");
+    const outArcId = `arc-out-${Date.now()}`;
+
+    if (userLocation) {
+      setArcs((prev) => [
+        ...prev,
+        {
+          id: outArcId,
+          startLat: userLocation.lat,
+          startLng: userLocation.lng,
+          endLat: datacenter.lat,
+          endLng: datacenter.lng,
+          color: USER_COLOR,
+          animateTime: 1200,
+        },
+      ]);
+
+      // Ensure data center marker is visible
+      setMarkers((prev) => [
+        ...prev.filter((m) => m.id !== "datacenter"),
+        {
+          id: "datacenter",
+          lat: datacenter.lat,
+          lng: datacenter.lng,
+          color: datacenter.color,
+          label: `${datacenter.name} — ${datacenter.provider}`,
+          radius: 0.7,
+          pulse: true,
+        },
+      ]);
+    }
+    // ─────────────────────────────────────────────────────────────────────────
+
     try {
       const res = await fetch("/api/chat", {
         method: "POST",
@@ -103,9 +170,34 @@ export default function ChatPage() {
 
       if (!res.ok) {
         setMessages((prev) => prev.filter((m) => m._id !== tempId));
+        // Remove outbound arc on error
+        setArcs((prev) => prev.filter((a) => a.id !== outArcId));
         alert(data.error ?? "Something went wrong");
         return;
       }
+
+      // ── Globe: inbound arc (data center → user) ─────────────────────────
+      if (userLocation) {
+        const inArcId = `arc-in-${Date.now()}`;
+        setArcs((prev) => [
+          ...prev.filter((a) => a.id !== outArcId), // remove outbound
+          {
+            id: inArcId,
+            startLat: datacenter.lat,
+            startLng: datacenter.lng,
+            endLat: userLocation.lat,
+            endLng: userLocation.lng,
+            color: INBOUND_ARC_COLOR,
+            animateTime: 1000,
+          },
+        ]);
+
+        // Clear the inbound arc after ~2 full animation loops
+        setTimeout(() => {
+          setArcs((prev) => prev.filter((a) => a.id !== inArcId));
+        }, 2500);
+      }
+      // ───────────────────────────────────────────────────────────────────────
 
       // Replace optimistic message + add assistant response
       setMessages((prev) => [
@@ -114,7 +206,6 @@ export default function ChatPage() {
         data.assistantMessage,
       ]);
 
-      // If new conversation, set it active and refresh list
       if (!activeId) {
         setActiveId(data.conversationId);
       }
@@ -129,8 +220,8 @@ export default function ChatPage() {
   }
 
   return (
-    <div className="flex h-screen bg-background text-foreground">
-      {/* Sidebar */}
+    <div className="flex h-screen bg-background text-foreground overflow-hidden">
+      {/* ── Sidebar ──────────────────────────────────────────────────────────── */}
       <aside className="w-64 flex flex-col border-r border-border bg-card shrink-0">
         <div className="flex items-center justify-between p-4 border-b border-border">
           <div className="flex items-center gap-2">
@@ -187,8 +278,8 @@ export default function ChatPage() {
         </div>
       </aside>
 
-      {/* Main chat area */}
-      <main className="flex flex-col flex-1 min-w-0">
+      {/* ── Chat panel ───────────────────────────────────────────────────────── */}
+      <main className="flex flex-col w-[440px] shrink-0 border-r border-border">
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-border shrink-0">
           <div>
@@ -205,7 +296,7 @@ export default function ChatPage() {
 
         {/* Messages */}
         <ScrollArea className="flex-1 px-4">
-          <div className="max-w-3xl mx-auto py-6 space-y-6">
+          <div className="max-w-full py-6 space-y-6">
             {!activeId && messages.length === 0 && !loading && (
               <div className="flex flex-col items-center justify-center h-64 text-center gap-3">
                 <BotIcon className="w-12 h-12 text-muted-foreground/40" />
@@ -230,12 +321,14 @@ export default function ChatPage() {
                 )}
               >
                 <Avatar className="w-8 h-8 shrink-0 mt-0.5">
-                  <AvatarFallback className={cn(
-                    "text-xs",
-                    msg.role === "assistant"
-                      ? "bg-primary text-primary-foreground"
-                      : "bg-muted text-muted-foreground"
-                  )}>
+                  <AvatarFallback
+                    className={cn(
+                      "text-xs",
+                      msg.role === "assistant"
+                        ? "bg-primary text-primary-foreground"
+                        : "bg-muted text-muted-foreground"
+                    )}
+                  >
                     {msg.role === "assistant" ? (
                       <BotIcon className="w-4 h-4" />
                     ) : (
@@ -246,7 +339,7 @@ export default function ChatPage() {
 
                 <div
                   className={cn(
-                    "flex flex-col gap-1 max-w-[75%]",
+                    "flex flex-col gap-1 max-w-[80%]",
                     msg.role === "user" ? "items-end" : "items-start"
                   )}
                 >
@@ -298,7 +391,7 @@ export default function ChatPage() {
         {/* Input */}
         <div className="border-t border-border p-4 shrink-0">
           <form
-            className="max-w-3xl mx-auto flex gap-2"
+            className="flex gap-2"
             onSubmit={(e) => {
               e.preventDefault();
               handleSend();
@@ -325,6 +418,29 @@ export default function ChatPage() {
           </p>
         </div>
       </main>
+
+      {/* ── Globe panel ──────────────────────────────────────────────────────── */}
+      <div className="flex-1 bg-black relative overflow-hidden">
+        <GlobeView arcs={arcs} markers={markers} autoRotate />
+
+        {/* Overlay: arc legend (only shown while arcs are active) */}
+        {arcs.length > 0 && (
+          <div className="absolute bottom-4 left-1/2 -translate-x-1/2 flex gap-3 bg-black/60 backdrop-blur-sm rounded-full px-4 py-2 text-xs text-white pointer-events-none">
+            {arcs.some((a) => a.color === USER_COLOR) && (
+              <span className="flex items-center gap-1.5">
+                <span className="w-2 h-2 rounded-full" style={{ background: USER_COLOR }} />
+                Sending request
+              </span>
+            )}
+            {arcs.some((a) => a.color === INBOUND_ARC_COLOR) && (
+              <span className="flex items-center gap-1.5">
+                <span className="w-2 h-2 rounded-full" style={{ background: INBOUND_ARC_COLOR }} />
+                Receiving response
+              </span>
+            )}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
