@@ -21,6 +21,11 @@ export interface ArcData {
   strokeWidth?: number;
   /** Duration of one animation loop in ms. Default 1400. */
   animateTime?: number;
+  /**
+   * When true the arc renders as a solid persistent line with no dash
+   * animation — use this for permanent history trails.
+   */
+  static?: boolean;
 }
 
 /** A dot (optionally with a pulsing ring) placed at a lat/lng. */
@@ -87,26 +92,37 @@ export function GlobeView({ arcs = [], markers = [], autoRotate = true }: GlobeV
   }, []);
 
   // Toggle globe auto-rotation based on whether arcs are active
-  useEffect(() => {
-    const controls = globeRef.current?.controls?.();
-    if (!controls) return;
-    controls.autoRotate = autoRotate && arcs.length === 0;
-    controls.autoRotateSpeed = 0.35;
-  }, [arcs.length, autoRotate]);
+  // useEffect(() => {
+  //   const controls = globeRef.current?.controls?.();
+  //   if (!controls) return;
+  //   controls.autoRotate = autoRotate && arcs.length === 0;
+  //   controls.autoRotateSpeed = 0.35;
+  // }, [arcs.length, autoRotate]);
 
-  // Fly the camera to the midpoint of the most recent arc
+  // Fly the camera to the midpoint of the most recent *animated* arc only.
+  // Static (persistent) arcs don't reposition the camera.
   useEffect(() => {
     if (!globeRef.current || arcs.length === 0) return;
     const arc = arcs[arcs.length - 1];
+    if (arc.static) return;
     const midLat = (arc.startLat + arc.endLat) / 2;
     const midLng = (arc.startLng + arc.endLng) / 2;
     globeRef.current.pointOfView?.({ lat: midLat, lng: midLng, altitude: 2.2 }, 1000);
   }, [arcs.length]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Arc color: gradient that fades in from the tail and stays bright at the head.
-  // globe.gl accepts an array of CSS color strings as gradient stops (t=0 → t=1).
+  // Arc color:
+  //   • Animated arcs → comet gradient (transparent tail → bright head)
+  //   • Static arcs   → solid semi-transparent line in the model's color
   const arcColor = (d: ArcData) => {
     const [r, g, b] = hexToRgb(d.color);
+    if (d.static) {
+      return [
+        `rgba(${r},${g},${b},0.25)`,
+        `rgba(${r},${g},${b},0.55)`,
+        `rgba(${r},${g},${b},0.55)`,
+        `rgba(${r},${g},${b},0.25)`,
+      ];
+    }
     return [
       `rgba(${r},${g},${b},0.04)`, // transparent tail
       `rgba(${r},${g},${b},0.9)`,  // bright mid
@@ -144,12 +160,13 @@ export function GlobeView({ arcs = [], markers = [], autoRotate = true }: GlobeV
           arcEndLng={(d: ArcData) => d.endLng}
           arcColor={arcColor}
           arcAltitude={(d: ArcData) => d.altitude ?? 0.3}
-          arcStroke={(d: ArcData) => d.strokeWidth ?? 1.5}
-          // Dash pattern: short bright streak with a long gap → "comet" look
-          arcDashLength={0.35}
-          arcDashGap={3}
-          arcDashInitialGap={0.5}
-          arcDashAnimateTime={(d: ArcData) => d.animateTime ?? 1400}
+          arcStroke={(d: ArcData) => d.static ? (d.strokeWidth ?? 0.8) : (d.strokeWidth ?? 1.5)}
+          // Static arcs: dashLength=1 / gap=0 → solid line, no animation
+          // Animated arcs: short comet streak with long gap
+          arcDashLength={(d: ArcData) => d.static ? 1 : 0.35}
+          arcDashGap={(d: ArcData) => d.static ? 0 : 3}
+          arcDashInitialGap={(d: ArcData) => d.static ? 0 : 0.5}
+          arcDashAnimateTime={(d: ArcData) => d.static ? 0 : (d.animateTime ?? 1400)}
           // ── Point / marker layer ─────────────────────────────────────────
           pointsData={markers}
           pointLat={(d: MarkerData) => d.lat}

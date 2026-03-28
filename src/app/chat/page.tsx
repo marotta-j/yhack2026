@@ -38,8 +38,7 @@ interface Conversation {
   updatedAt: string;
 }
 
-const USER_COLOR = "#60a5fa";      // blue  — outbound arcs + user marker
-const INBOUND_ARC_COLOR = "#f97316"; // orange — inbound arcs
+const USER_COLOR = "#60a5fa"; // blue — user marker dot only (arcs use the model's color)
 
 export default function ChatPage() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
@@ -189,7 +188,7 @@ export default function ChatPage() {
                 },
               ]);
 
-              // ── Globe: outbound arc to the actual selected datacenter ──────
+              // ── Globe: outbound arc in the selected model's color ─────────
               if (userLocation) {
                 currentDatacenter = resolveDataCenter(event.model);
                 outArcId = `arc-out-${Date.now()}`;
@@ -201,7 +200,7 @@ export default function ChatPage() {
                     startLng: userLocation.lng,
                     endLat: currentDatacenter.lat,
                     endLng: currentDatacenter.lng,
-                    color: USER_COLOR,
+                    color: currentDatacenter.color,
                     animateTime: 1200,
                   },
                 ]);
@@ -235,24 +234,38 @@ export default function ChatPage() {
               ]);
               fetchConversations();
 
-              // ── Globe: swap outbound for inbound arc ──────────────────────
+              // ── Globe: replace animated arc with permanent line ───────────
               if (userLocation && outArcId) {
+                const staticArcId = `arc-static-${Date.now()}`;
                 const inArcId = `arc-in-${Date.now()}`;
                 setArcs((prev) => [
+                  // Remove the animated outbound arc
                   ...prev.filter((a) => a.id !== outArcId),
+                  // Permanent solid line (user → datacenter) in model color
+                  {
+                    id: staticArcId,
+                    startLat: userLocation.lat,
+                    startLng: userLocation.lng,
+                    endLat: currentDatacenter.lat,
+                    endLng: currentDatacenter.lng,
+                    color: currentDatacenter.color,
+                    static: true,
+                  },
+                  // Brief inbound animation (datacenter → user) to signal arrival
                   {
                     id: inArcId,
                     startLat: currentDatacenter.lat,
                     startLng: currentDatacenter.lng,
                     endLat: userLocation.lat,
                     endLng: userLocation.lng,
-                    color: INBOUND_ARC_COLOR,
-                    animateTime: 1000,
+                    color: currentDatacenter.color,
+                    animateTime: 900,
                   },
                 ]);
+                // Remove only the transient inbound arc after one cycle
                 setTimeout(() => {
                   setArcs((prev) => prev.filter((a) => a.id !== inArcId));
-                }, 2500);
+                }, 1600);
               }
               // ─────────────────────────────────────────────────────────────
 
@@ -504,23 +517,20 @@ export default function ChatPage() {
       <div className="flex-1 bg-black relative overflow-hidden">
         <GlobeView arcs={arcs} markers={markers} autoRotate />
 
-        {/* Arc legend — visible while arcs are active */}
-        {arcs.length > 0 && (
-          <div className="absolute bottom-4 left-1/2 -translate-x-1/2 flex gap-3 bg-black/60 backdrop-blur-sm rounded-full px-4 py-2 text-xs text-white pointer-events-none">
-            {arcs.some((a) => a.color === USER_COLOR) && (
+        {/* Arc legend — shows active routing info while a request is in flight */}
+        {loading && selectedModel && (() => {
+          const dc = resolveDataCenter(selectedModel);
+          return (
+            <div className="absolute bottom-4 left-1/2 -translate-x-1/2 flex gap-3 bg-black/60 backdrop-blur-sm rounded-full px-4 py-2 text-xs text-white pointer-events-none">
               <span className="flex items-center gap-1.5">
-                <span className="w-2 h-2 rounded-full" style={{ background: USER_COLOR }} />
-                Sending request
+                <span className="w-2 h-2 rounded-full" style={{ background: dc.color }} />
+                {isStreaming ? "Streaming from" : "Routing to"}{" "}
+                <span className="font-medium">{selectedModel}</span>
+                {" "}·{" "}{dc.name}
               </span>
-            )}
-            {arcs.some((a) => a.color === INBOUND_ARC_COLOR) && (
-              <span className="flex items-center gap-1.5">
-                <span className="w-2 h-2 rounded-full" style={{ background: INBOUND_ARC_COLOR }} />
-                Receiving response
-              </span>
-            )}
-          </div>
-        )}
+            </div>
+          );
+        })()}
       </div>
     </div>
   );
