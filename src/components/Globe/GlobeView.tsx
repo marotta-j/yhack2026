@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { Component, useEffect, useRef, useState, type ReactNode } from 'react';
 import dynamic from 'next/dynamic';
 
 // ─── Public types ─────────────────────────────────────────────────────────────
@@ -15,7 +15,7 @@ export interface ArcData {
   endLng: number;
   /** CSS hex color, e.g. "#4ade80". */
   color: string;
-  /** Arc peak height relative to globe radius (0–1). Default 0.3. */
+  /** Arc peak height relative to globe radius (0–1). Default 0.1. */
   altitude?: number;
   /** Line stroke width in px. Default 1.5. */
   strokeWidth?: number;
@@ -64,43 +64,85 @@ function hexToRgb(hex: string): [number, number, number] {
   ];
 }
 
+/** Returns true if the browser supports WebGL2 or WebGL1. */
+function checkWebGL(): boolean {
+  if (typeof window === 'undefined') return false;
+  try {
+    const canvas = document.createElement('canvas');
+    return !!(
+      canvas.getContext('webgl2') ||
+      canvas.getContext('webgl') ||
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (canvas as any).getContext('experimental-webgl')
+    );
+  } catch {
+    return false;
+  }
+}
+
+// ─── Error boundary ───────────────────────────────────────────────────────────
+
+class GlobeErrorBoundary extends Component<
+  { children: ReactNode; fallback: ReactNode },
+  { hasError: boolean }
+> {
+  state = { hasError: false };
+  static getDerivedStateFromError() { return { hasError: true }; }
+  render() {
+    return this.state.hasError ? this.props.fallback : this.props.children;
+  }
+}
+
+// ─── Fallback UI (shown when WebGL is unavailable) ───────────────────────────
+
+function GlobeFallback({ markers }: { markers: MarkerData[] }) {
+  const datacenters = markers.filter((m) => m.id !== 'user');
+  return (
+    <div className="w-full h-full flex flex-col items-center justify-center gap-4 bg-black/80 text-white/60 text-sm px-6">
+      <p className="text-white/40 text-xs uppercase tracking-widest">Globe unavailable</p>
+      <p className="text-center text-xs">
+        WebGL is not supported in this environment.<br />
+        Open the app in a browser with GPU acceleration to see the 3D globe.
+      </p>
+      {datacenters.length > 0 && (
+        <div className="mt-2 space-y-1 text-center">
+          <p className="text-white/40 text-xs mb-2">Active routing targets</p>
+          {datacenters.map((m) => (
+            <div key={m.id} className="flex items-center gap-2 justify-center">
+              <span className="w-2 h-2 rounded-full shrink-0" style={{ background: m.color }} />
+              <span className="text-xs text-white/70">{m.label ?? m.id}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Dynamic import (WebGL must not run on the server) ────────────────────────
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const GlobeGL = dynamic(() => import('react-globe.gl'), { ssr: false }) as any;
 
-// ─── Component ────────────────────────────────────────────────────────────────
+// ─── Inner globe (rendered only when WebGL is confirmed available) ────────────
 
-export function GlobeView({ arcs = [], markers = [], autoRotate = true }: GlobeViewProps) {
+function GlobeInner({ arcs, markers, autoRotate }: Required<GlobeViewProps>) {
   const containerRef = useRef<HTMLDivElement>(null);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const globeRef = useRef<any>(null);
   const [size, setSize] = useState({ width: 0, height: 0 });
 
-  // Track container dimensions and respond to resize
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
-
-    const update = () =>
-      setSize({ width: el.clientWidth, height: el.clientHeight });
+    const update = () => setSize({ width: el.clientWidth, height: el.clientHeight });
     update();
-
     const ro = new ResizeObserver(update);
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
 
-  // Toggle globe auto-rotation based on whether arcs are active
-  // useEffect(() => {
-  //   const controls = globeRef.current?.controls?.();
-  //   if (!controls) return;
-  //   controls.autoRotate = autoRotate && arcs.length === 0;
-  //   controls.autoRotateSpeed = 0.35;
-  // }, [arcs.length, autoRotate]);
-
-  // Fly the camera to the midpoint of the most recent *animated* arc only.
-  // Static (persistent) arcs don't reposition the camera.
+  // Fly camera to midpoint of the most recent animated arc
   useEffect(() => {
     if (!globeRef.current || arcs.length === 0) return;
     const arc = arcs[arcs.length - 1];
@@ -110,9 +152,6 @@ export function GlobeView({ arcs = [], markers = [], autoRotate = true }: GlobeV
     globeRef.current.pointOfView?.({ lat: midLat, lng: midLng, altitude: 2.2 }, 1000);
   }, [arcs.length]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Arc color:
-  //   • Animated arcs → comet gradient (transparent tail → bright head)
-  //   • Static arcs   → solid semi-transparent line in the model's color
   const arcColor = (d: ArcData) => {
     const [r, g, b] = hexToRgb(d.color);
     if (d.static) {
@@ -124,15 +163,13 @@ export function GlobeView({ arcs = [], markers = [], autoRotate = true }: GlobeV
       ];
     }
     return [
-      `rgba(${r},${g},${b},0.04)`, // transparent tail
-      `rgba(${r},${g},${b},0.9)`,  // bright mid
-      `rgba(${r},${g},${b},1)`,    // bright head
-      `rgba(${r},${g},${b},0.2)`,  // slight glow beyond head
+      `rgba(${r},${g},${b},0.04)`,
+      `rgba(${r},${g},${b},0.9)`,
+      `rgba(${r},${g},${b},1)`,
+      `rgba(${r},${g},${b},0.2)`,
     ];
   };
 
-  // Ring color: expands outward while fading to transparent.
-  // globe.gl calls this once per marker and expects a (t: number) => string back.
   const ringColor = (d: MarkerData) => (t: number) => {
     const [r, g, b] = hexToRgb(d.color);
     return `rgba(${r},${g},${b},${(1 - t).toFixed(2)})`;
@@ -147,27 +184,22 @@ export function GlobeView({ arcs = [], markers = [], autoRotate = true }: GlobeV
           ref={globeRef}
           width={size.width}
           height={size.height}
-          // Globe appearance
           globeImageUrl="//unpkg.com/three-globe/example/img/earth-night.jpg"
           backgroundImageUrl="//unpkg.com/three-globe/example/img/night-sky.png"
           atmosphereColor="rgba(80,180,255,0.22)"
           atmosphereAltitude={0.13}
-          // ── Arc layer ────────────────────────────────────────────────────
           arcsData={arcs}
           arcStartLat={(d: ArcData) => d.startLat}
           arcStartLng={(d: ArcData) => d.startLng}
           arcEndLat={(d: ArcData) => d.endLat}
           arcEndLng={(d: ArcData) => d.endLng}
           arcColor={arcColor}
-          arcAltitude={(d: ArcData) => d.altitude ?? 0.3}
+          arcAltitude={(d: ArcData) => d.altitude ?? 0.1}
           arcStroke={(d: ArcData) => d.static ? (d.strokeWidth ?? 0.8) : (d.strokeWidth ?? 1.5)}
-          // Static arcs: dashLength=1 / gap=0 → solid line, no animation
-          // Animated arcs: short comet streak with long gap
           arcDashLength={(d: ArcData) => d.static ? 1 : 0.35}
           arcDashGap={(d: ArcData) => d.static ? 0 : 3}
           arcDashInitialGap={(d: ArcData) => d.static ? 0 : 0.5}
           arcDashAnimateTime={(d: ArcData) => d.static ? 0 : (d.animateTime ?? 1400)}
-          // ── Point / marker layer ─────────────────────────────────────────
           pointsData={markers}
           pointLat={(d: MarkerData) => d.lat}
           pointLng={(d: MarkerData) => d.lng}
@@ -175,7 +207,6 @@ export function GlobeView({ arcs = [], markers = [], autoRotate = true }: GlobeV
           pointRadius={(d: MarkerData) => d.radius ?? 0.5}
           pointAltitude={(d: MarkerData) => d.altitude ?? 0.01}
           pointLabel={(d: MarkerData) => d.label ?? ''}
-          // ── Ring / pulse layer ───────────────────────────────────────────
           ringsData={pulsingMarkers}
           ringLat={(d: MarkerData) => d.lat}
           ringLng={(d: MarkerData) => d.lng}
@@ -186,5 +217,30 @@ export function GlobeView({ arcs = [], markers = [], autoRotate = true }: GlobeV
         />
       )}
     </div>
+  );
+}
+
+// ─── Public component ─────────────────────────────────────────────────────────
+
+export function GlobeView({ arcs = [], markers = [], autoRotate = true }: GlobeViewProps) {
+  const [webglOk, setWebglOk] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    setWebglOk(checkWebGL());
+  }, []);
+
+  // Still checking (avoids flash of fallback in supported browsers)
+  if (webglOk === null) {
+    return <div className="w-full h-full bg-black" />;
+  }
+
+  const fallback = <GlobeFallback markers={markers} />;
+
+  if (!webglOk) return fallback;
+
+  return (
+    <GlobeErrorBoundary fallback={fallback}>
+      <GlobeInner arcs={arcs} markers={markers} autoRotate={autoRotate} />
+    </GlobeErrorBoundary>
   );
 }
