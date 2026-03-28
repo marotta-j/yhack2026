@@ -3,7 +3,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Separator } from "@/components/ui/separator";
 import { Badge } from "@/components/ui/badge";
@@ -16,6 +15,7 @@ import {
   BotIcon,
   UserIcon,
   LoaderIcon,
+  ZapIcon,
 } from "lucide-react";
 import Link from "next/link";
 
@@ -25,6 +25,8 @@ interface Message {
   content: string;
   totalTokens?: number;
   createdAt: string;
+  streaming?: boolean;
+  rightsizingModel?: string;
 }
 
 interface Conversation {
@@ -41,7 +43,9 @@ export default function ChatPage() {
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [loadingMessages, setLoadingMessages] = useState(false);
+  const [selectedModel, setSelectedModel] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const isStreamingRef = useRef(false);
 
   // Load conversation list
   useEffect(() => {
@@ -54,6 +58,7 @@ export default function ChatPage() {
       setMessages([]);
       return;
     }
+    if (isStreamingRef.current) return; // don't overwrite local state mid-stream
     setLoadingMessages(true);
     fetch(`/api/conversations/${activeId}/messages`)
       .then((r) => r.json())
@@ -76,6 +81,7 @@ export default function ChatPage() {
     setActiveId(null);
     setMessages([]);
     setInput("");
+    setSelectedModel(null);
   }
 
   async function handleSend() {
@@ -84,9 +90,11 @@ export default function ChatPage() {
 
     setInput("");
     setLoading(true);
+    isStreamingRef.current = true;
 
     // Optimistic user message
     const tempId = `temp-${Date.now()}`;
+    const streamingId = `streaming-${Date.now()}`;
     setMessages((prev) => [
       ...prev,
       { _id: tempId, role: "user", content: text, createdAt: new Date().toISOString() },
@@ -99,27 +107,80 @@ export default function ChatPage() {
         body: JSON.stringify({ conversationId: activeId, content: text }),
       });
 
-      const data = await res.json();
-
-      if (!res.ok) {
+      if (!res.ok || !res.body) {
+        const data = await res.json().catch(() => ({}));
         setMessages((prev) => prev.filter((m) => m._id !== tempId));
         alert(data.error ?? "Something went wrong");
         return;
       }
 
-      // Replace optimistic message + add assistant response
-      setMessages((prev) => [
-        ...prev.filter((m) => m._id !== tempId),
-        data.userMessage,
-        data.assistantMessage,
-      ]);
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
 
-      // If new conversation, set it active and refresh list
-      if (!activeId) {
-        setActiveId(data.conversationId);
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop()!;
+
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          try {
+            const event = JSON.parse(line);
+
+            if (event.type === "model") {
+              setSelectedModel(event.model);
+              if (!activeId) setActiveId(event.conversationId);
+              setMessages((prev) => [
+                ...prev.filter((m) => m._id !== tempId),
+                event.userMessage,
+                // Rightsizing notice
+                {
+                  _id: `rightsizing-${streamingId}`,
+                  role: "assistant",
+                  content: "",
+                  rightsizingModel: event.model,
+                  createdAt: new Date().toISOString(),
+                },
+                // Streaming assistant bubble
+                {
+                  _id: streamingId,
+                  role: "assistant",
+                  content: "",
+                  streaming: true,
+                  createdAt: new Date().toISOString(),
+                },
+              ]);
+            } else if (event.type === "delta") {
+              setMessages((prev) =>
+                prev.map((m) =>
+                  m._id === streamingId
+                    ? { ...m, content: m.content + event.content }
+                    : m,
+                ),
+              );
+            } else if (event.type === "done") {
+              setMessages((prev) => [
+                ...prev.filter((m) => m._id !== streamingId),
+                event.assistantMessage,
+              ]);
+              fetchConversations();
+            } else if (event.type === "error") {
+              setMessages((prev) =>
+                prev.filter((m) => m._id !== tempId && m._id !== streamingId),
+              );
+              alert(event.error ?? "Something went wrong");
+            }
+          } catch {
+            // skip malformed line
+          }
+        }
       }
-      fetchConversations();
     } finally {
+      isStreamingRef.current = false;
       setLoading(false);
     }
   }
@@ -127,6 +188,8 @@ export default function ChatPage() {
   function formatTime(iso: string) {
     return new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   }
+
+  const isStreaming = messages.some((m) => m.streaming);
 
   return (
     <div className="flex h-screen bg-background text-foreground">
@@ -150,7 +213,7 @@ export default function ChatPage() {
           </Button>
         </div>
 
-        <ScrollArea className="flex-1 px-2">
+        <div className="flex-1 min-h-0 overflow-y-auto px-2">
           <div className="space-y-1 pb-2">
             {conversations.map((conv) => (
               <button
@@ -174,7 +237,7 @@ export default function ChatPage() {
               </button>
             ))}
           </div>
-        </ScrollArea>
+        </div>
 
         <Separator />
         <div className="p-3">
@@ -200,11 +263,11 @@ export default function ChatPage() {
               <h1 className="font-semibold text-muted-foreground">New Conversation</h1>
             )}
           </div>
-          <Badge variant="secondary" className="text-xs">GPT-4o</Badge>
+          <Badge variant="secondary" className="text-xs">{selectedModel ?? "—"}</Badge>
         </div>
 
         {/* Messages */}
-        <ScrollArea className="flex-1 px-4">
+        <div className="flex-1 min-h-0 overflow-y-auto px-4">
           <div className="max-w-3xl mx-auto py-6 space-y-6">
             {!activeId && messages.length === 0 && !loading && (
               <div className="flex flex-col items-center justify-center h-64 text-center gap-3">
@@ -221,60 +284,80 @@ export default function ChatPage() {
               </div>
             )}
 
-            {messages.map((msg) => (
-              <div
-                key={msg._id}
-                className={cn(
-                  "flex gap-3",
-                  msg.role === "user" ? "flex-row-reverse" : "flex-row"
-                )}
-              >
-                <Avatar className="w-8 h-8 shrink-0 mt-0.5">
-                  <AvatarFallback className={cn(
-                    "text-xs",
-                    msg.role === "assistant"
-                      ? "bg-primary text-primary-foreground"
-                      : "bg-muted text-muted-foreground"
-                  )}>
-                    {msg.role === "assistant" ? (
-                      <BotIcon className="w-4 h-4" />
-                    ) : (
-                      <UserIcon className="w-4 h-4" />
-                    )}
-                  </AvatarFallback>
-                </Avatar>
+            {messages.map((msg) => {
+              // Rightsizing notice — rendered as a small centered label
+              if (msg.rightsizingModel) {
+                return (
+                  <div key={msg._id} className="flex items-center justify-center gap-2">
+                    <ZapIcon className="w-3 h-3 text-muted-foreground" />
+                    <span className="text-xs text-muted-foreground">
+                      Rightsizing: <span className="font-medium text-foreground">{msg.rightsizingModel}</span> selected for this prompt
+                    </span>
+                  </div>
+                );
+              }
 
+              return (
                 <div
+                  key={msg._id}
                   className={cn(
-                    "flex flex-col gap-1 max-w-[75%]",
-                    msg.role === "user" ? "items-end" : "items-start"
+                    "flex gap-3",
+                    msg.role === "user" ? "flex-row-reverse" : "flex-row"
                   )}
                 >
+                  <Avatar className="w-8 h-8 shrink-0 mt-0.5">
+                    <AvatarFallback className={cn(
+                      "text-xs",
+                      msg.role === "assistant"
+                        ? "bg-primary text-primary-foreground"
+                        : "bg-muted text-muted-foreground"
+                    )}>
+                      {msg.role === "assistant" ? (
+                        <BotIcon className="w-4 h-4" />
+                      ) : (
+                        <UserIcon className="w-4 h-4" />
+                      )}
+                    </AvatarFallback>
+                  </Avatar>
+
                   <div
                     className={cn(
-                      "rounded-2xl px-4 py-2.5 text-sm leading-relaxed whitespace-pre-wrap",
-                      msg.role === "user"
-                        ? "bg-primary text-primary-foreground rounded-tr-sm"
-                        : "bg-muted text-foreground rounded-tl-sm"
+                      "flex flex-col gap-1 max-w-[75%]",
+                      msg.role === "user" ? "items-end" : "items-start"
                     )}
                   >
-                    {msg.content}
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs text-muted-foreground">
-                      {formatTime(msg.createdAt)}
-                    </span>
-                    {msg.totalTokens && msg.totalTokens > 0 && (
-                      <span className="text-xs text-muted-foreground">
-                        · {msg.totalTokens} tokens
-                      </span>
+                    <div
+                      className={cn(
+                        "rounded-2xl px-4 py-2.5 text-sm leading-relaxed whitespace-pre-wrap",
+                        msg.role === "user"
+                          ? "bg-primary text-primary-foreground rounded-tr-sm"
+                          : "bg-muted text-foreground rounded-tl-sm"
+                      )}
+                    >
+                      {msg.content}
+                      {msg.streaming && (
+                        <span className="inline-block w-1.5 h-3.5 ml-0.5 bg-foreground/50 animate-pulse rounded-sm align-middle" />
+                      )}
+                    </div>
+                    {!msg.streaming && (
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs text-muted-foreground">
+                          {formatTime(msg.createdAt)}
+                        </span>
+                        {msg.totalTokens && msg.totalTokens > 0 && (
+                          <span className="text-xs text-muted-foreground">
+                            · {msg.totalTokens} tokens
+                          </span>
+                        )}
+                      </div>
                     )}
                   </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
 
-            {loading && (
+            {/* Typing dots — only while waiting for the first stream event */}
+            {loading && !isStreaming && (
               <div className="flex gap-3">
                 <Avatar className="w-8 h-8 shrink-0 mt-0.5">
                   <AvatarFallback className="bg-primary text-primary-foreground text-xs">
@@ -293,7 +376,7 @@ export default function ChatPage() {
 
             <div ref={bottomRef} />
           </div>
-        </ScrollArea>
+        </div>
 
         {/* Input */}
         <div className="border-t border-border p-4 shrink-0">
@@ -307,7 +390,7 @@ export default function ChatPage() {
             <Input
               value={input}
               onChange={(e) => setInput(e.target.value)}
-              placeholder="Message GPT-4o..."
+              placeholder="Message..."
               className="flex-1"
               disabled={loading}
               autoFocus
@@ -321,7 +404,7 @@ export default function ChatPage() {
             </Button>
           </form>
           <p className="text-xs text-center text-muted-foreground mt-2">
-            Powered by Lava Gateway · OpenAI GPT-4o
+            Powered by Lava Gateway{selectedModel ? ` · ${selectedModel}` : ""}
           </p>
         </div>
       </main>
