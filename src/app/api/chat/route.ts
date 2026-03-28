@@ -78,13 +78,22 @@ export async function POST(req: Request) {
     }
   }
 
-  // Select model based on difficulty score
+  // Select model based on difficulty score (5 tiers, eco-friendly routing)
+  // Score 1-2  → Gemini 2.0 Flash   (Google)     — trivial tasks
+  // Score 3-4  → GPT-4o Mini        (OpenAI)     — simple tasks
+  // Score 5-6  → Grok 3 Fast        (xAI)        — moderate tasks
+  // Score 7-8  → Claude Sonnet 4.6  (Anthropic)  — complex tasks
+  // Score 9-10 → Claude Opus 4.6    (Anthropic)  — hardest tasks
   const selectedModel =
-    difficultyScore <= 3
-      ? "gpt-5-nano"
-      : difficultyScore <= 6
-        ? "gpt-5.1"
-        : "claude-opus-4-6";
+    difficultyScore <= 2
+      ? "gemini-2.0-flash"
+      : difficultyScore <= 4
+        ? "gpt-4o-mini"
+        : difficultyScore <= 6
+          ? "grok-3-fast"
+          : difficultyScore <= 8
+            ? "claude-sonnet-4-6"
+            : "claude-opus-4-6";
 
   console.log(selectedModel, "selected based on difficulty score", difficultyScore);
 
