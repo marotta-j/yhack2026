@@ -3,7 +3,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Separator } from "@/components/ui/separator";
 import { Badge } from "@/components/ui/badge";
@@ -16,6 +15,7 @@ import {
   BotIcon,
   UserIcon,
   LoaderIcon,
+  ZapIcon,
 } from "lucide-react";
 import Link from "next/link";
 import { GlobeView, ArcData, MarkerData } from "@/components/Globe/GlobeView";
@@ -27,6 +27,8 @@ interface Message {
   content: string;
   totalTokens?: number;
   createdAt: string;
+  streaming?: boolean;
+  rightsizingModel?: string;
 }
 
 interface Conversation {
@@ -36,10 +38,8 @@ interface Conversation {
   updatedAt: string;
 }
 
-// Color used for the "you" marker and outbound arcs
-const USER_COLOR = "#60a5fa"; // blue
-// Color used for inbound (response) arcs
-const INBOUND_ARC_COLOR = "#f97316"; // orange
+const USER_COLOR = "#60a5fa";      // blue  — outbound arcs + user marker
+const INBOUND_ARC_COLOR = "#f97316"; // orange — inbound arcs
 
 export default function ChatPage() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
@@ -48,7 +48,9 @@ export default function ChatPage() {
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [loadingMessages, setLoadingMessages] = useState(false);
+  const [selectedModel, setSelectedModel] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const isStreamingRef = useRef(false);
 
   // Globe state
   const [arcs, setArcs] = useState<ArcData[]>([]);
@@ -60,7 +62,7 @@ export default function ChatPage() {
     fetchConversations();
   }, []);
 
-  // Fetch user geolocation on mount and place the "You" marker
+  // Resolve user IP → coordinates and place the "You" marker
   useEffect(() => {
     fetch("/api/geolocate")
       .then((r) => r.json())
@@ -87,6 +89,7 @@ export default function ChatPage() {
       setMessages([]);
       return;
     }
+    if (isStreamingRef.current) return; // don't overwrite local state mid-stream
     setLoadingMessages(true);
     fetch(`/api/conversations/${activeId}/messages`)
       .then((r) => r.json())
@@ -109,6 +112,7 @@ export default function ChatPage() {
     setActiveId(null);
     setMessages([]);
     setInput("");
+    setSelectedModel(null);
   }
 
   async function handleSend() {
@@ -117,47 +121,14 @@ export default function ChatPage() {
 
     setInput("");
     setLoading(true);
+    isStreamingRef.current = true;
 
-    // Optimistic user message
     const tempId = `temp-${Date.now()}`;
+    const streamingId = `streaming-${Date.now()}`;
     setMessages((prev) => [
       ...prev,
       { _id: tempId, role: "user", content: text, createdAt: new Date().toISOString() },
     ]);
-
-    // ── Globe: outbound arc (user → data center) ─────────────────────────────
-    const datacenter = resolveDataCenter("gpt-4o");
-    const outArcId = `arc-out-${Date.now()}`;
-
-    if (userLocation) {
-      setArcs((prev) => [
-        ...prev,
-        {
-          id: outArcId,
-          startLat: userLocation.lat,
-          startLng: userLocation.lng,
-          endLat: datacenter.lat,
-          endLng: datacenter.lng,
-          color: USER_COLOR,
-          animateTime: 1200,
-        },
-      ]);
-
-      // Ensure data center marker is visible
-      setMarkers((prev) => [
-        ...prev.filter((m) => m.id !== "datacenter"),
-        {
-          id: "datacenter",
-          lat: datacenter.lat,
-          lng: datacenter.lng,
-          color: datacenter.color,
-          label: `${datacenter.name} — ${datacenter.provider}`,
-          radius: 0.7,
-          pulse: true,
-        },
-      ]);
-    }
-    // ─────────────────────────────────────────────────────────────────────────
 
     try {
       const res = await fetch("/api/chat", {
@@ -166,51 +137,139 @@ export default function ChatPage() {
         body: JSON.stringify({ conversationId: activeId, content: text }),
       });
 
-      const data = await res.json();
-
-      if (!res.ok) {
+      if (!res.ok || !res.body) {
+        const data = await res.json().catch(() => ({}));
         setMessages((prev) => prev.filter((m) => m._id !== tempId));
-        // Remove outbound arc on error
-        setArcs((prev) => prev.filter((a) => a.id !== outArcId));
         alert(data.error ?? "Something went wrong");
         return;
       }
 
-      // ── Globe: inbound arc (data center → user) ─────────────────────────
-      if (userLocation) {
-        const inArcId = `arc-in-${Date.now()}`;
-        setArcs((prev) => [
-          ...prev.filter((a) => a.id !== outArcId), // remove outbound
-          {
-            id: inArcId,
-            startLat: datacenter.lat,
-            startLng: datacenter.lng,
-            endLat: userLocation.lat,
-            endLng: userLocation.lng,
-            color: INBOUND_ARC_COLOR,
-            animateTime: 1000,
-          },
-        ]);
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
 
-        // Clear the inbound arc after ~2 full animation loops
-        setTimeout(() => {
-          setArcs((prev) => prev.filter((a) => a.id !== inArcId));
-        }, 2500);
+      // Globe: track arcs within this request
+      let outArcId: string | null = null;
+      let currentDatacenter = resolveDataCenter("gpt-4o"); // updated on model event
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop()!;
+
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          try {
+            const event = JSON.parse(line);
+
+            if (event.type === "model") {
+              setSelectedModel(event.model);
+              if (!activeId) setActiveId(event.conversationId);
+              setMessages((prev) => [
+                ...prev.filter((m) => m._id !== tempId),
+                event.userMessage,
+                // Rightsizing notice
+                {
+                  _id: `rightsizing-${streamingId}`,
+                  role: "assistant",
+                  content: "",
+                  rightsizingModel: event.model,
+                  createdAt: new Date().toISOString(),
+                },
+                // Streaming assistant bubble
+                {
+                  _id: streamingId,
+                  role: "assistant",
+                  content: "",
+                  streaming: true,
+                  createdAt: new Date().toISOString(),
+                },
+              ]);
+
+              // ── Globe: outbound arc to the actual selected datacenter ──────
+              if (userLocation) {
+                currentDatacenter = resolveDataCenter(event.model);
+                outArcId = `arc-out-${Date.now()}`;
+                setArcs((prev) => [
+                  ...prev,
+                  {
+                    id: outArcId!,
+                    startLat: userLocation.lat,
+                    startLng: userLocation.lng,
+                    endLat: currentDatacenter.lat,
+                    endLng: currentDatacenter.lng,
+                    color: USER_COLOR,
+                    animateTime: 1200,
+                  },
+                ]);
+                setMarkers((prev) => [
+                  ...prev.filter((m) => m.id !== "datacenter"),
+                  {
+                    id: "datacenter",
+                    lat: currentDatacenter.lat,
+                    lng: currentDatacenter.lng,
+                    color: currentDatacenter.color,
+                    label: `${currentDatacenter.name} — ${currentDatacenter.provider}`,
+                    radius: 0.7,
+                    pulse: true,
+                  },
+                ]);
+              }
+              // ─────────────────────────────────────────────────────────────
+
+            } else if (event.type === "delta") {
+              setMessages((prev) =>
+                prev.map((m) =>
+                  m._id === streamingId
+                    ? { ...m, content: m.content + event.content }
+                    : m,
+                ),
+              );
+            } else if (event.type === "done") {
+              setMessages((prev) => [
+                ...prev.filter((m) => m._id !== streamingId),
+                event.assistantMessage,
+              ]);
+              fetchConversations();
+
+              // ── Globe: swap outbound for inbound arc ──────────────────────
+              if (userLocation && outArcId) {
+                const inArcId = `arc-in-${Date.now()}`;
+                setArcs((prev) => [
+                  ...prev.filter((a) => a.id !== outArcId),
+                  {
+                    id: inArcId,
+                    startLat: currentDatacenter.lat,
+                    startLng: currentDatacenter.lng,
+                    endLat: userLocation.lat,
+                    endLng: userLocation.lng,
+                    color: INBOUND_ARC_COLOR,
+                    animateTime: 1000,
+                  },
+                ]);
+                setTimeout(() => {
+                  setArcs((prev) => prev.filter((a) => a.id !== inArcId));
+                }, 2500);
+              }
+              // ─────────────────────────────────────────────────────────────
+
+            } else if (event.type === "error") {
+              setMessages((prev) =>
+                prev.filter((m) => m._id !== tempId && m._id !== streamingId),
+              );
+              if (outArcId) setArcs((prev) => prev.filter((a) => a.id !== outArcId));
+              alert(event.error ?? "Something went wrong");
+            }
+          } catch {
+            // skip malformed line
+          }
+        }
       }
-      // ───────────────────────────────────────────────────────────────────────
-
-      // Replace optimistic message + add assistant response
-      setMessages((prev) => [
-        ...prev.filter((m) => m._id !== tempId),
-        data.userMessage,
-        data.assistantMessage,
-      ]);
-
-      if (!activeId) {
-        setActiveId(data.conversationId);
-      }
-      fetchConversations();
     } finally {
+      isStreamingRef.current = false;
       setLoading(false);
     }
   }
@@ -218,6 +277,8 @@ export default function ChatPage() {
   function formatTime(iso: string) {
     return new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   }
+
+  const isStreaming = messages.some((m) => m.streaming);
 
   return (
     <div className="flex h-screen bg-background text-foreground overflow-hidden">
@@ -241,7 +302,7 @@ export default function ChatPage() {
           </Button>
         </div>
 
-        <ScrollArea className="flex-1 px-2">
+        <div className="flex-1 min-h-0 overflow-y-auto px-2">
           <div className="space-y-1 pb-2">
             {conversations.map((conv) => (
               <button
@@ -265,7 +326,7 @@ export default function ChatPage() {
               </button>
             ))}
           </div>
-        </ScrollArea>
+        </div>
 
         <Separator />
         <div className="p-3">
@@ -291,12 +352,12 @@ export default function ChatPage() {
               <h1 className="font-semibold text-muted-foreground">New Conversation</h1>
             )}
           </div>
-          <Badge variant="secondary" className="text-xs">GPT-4o</Badge>
+          <Badge variant="secondary" className="text-xs">{selectedModel ?? "—"}</Badge>
         </div>
 
         {/* Messages */}
-        <ScrollArea className="flex-1 px-4">
-          <div className="max-w-full py-6 space-y-6">
+        <div className="flex-1 min-h-0 overflow-y-auto px-4">
+          <div className="max-w-3xl mx-auto py-6 space-y-6">
             {!activeId && messages.length === 0 && !loading && (
               <div className="flex flex-col items-center justify-center h-64 text-center gap-3">
                 <BotIcon className="w-12 h-12 text-muted-foreground/40" />
@@ -312,62 +373,82 @@ export default function ChatPage() {
               </div>
             )}
 
-            {messages.map((msg) => (
-              <div
-                key={msg._id}
-                className={cn(
-                  "flex gap-3",
-                  msg.role === "user" ? "flex-row-reverse" : "flex-row"
-                )}
-              >
-                <Avatar className="w-8 h-8 shrink-0 mt-0.5">
-                  <AvatarFallback
-                    className={cn(
+            {messages.map((msg) => {
+              // Rightsizing notice — small centered label between messages
+              if (msg.rightsizingModel) {
+                return (
+                  <div key={msg._id} className="flex items-center justify-center gap-2">
+                    <ZapIcon className="w-3 h-3 text-muted-foreground" />
+                    <span className="text-xs text-muted-foreground">
+                      Rightsizing:{" "}
+                      <span className="font-medium text-foreground">{msg.rightsizingModel}</span>{" "}
+                      selected for this prompt
+                    </span>
+                  </div>
+                );
+              }
+
+              return (
+                <div
+                  key={msg._id}
+                  className={cn(
+                    "flex gap-3",
+                    msg.role === "user" ? "flex-row-reverse" : "flex-row"
+                  )}
+                >
+                  <Avatar className="w-8 h-8 shrink-0 mt-0.5">
+                    <AvatarFallback className={cn(
                       "text-xs",
                       msg.role === "assistant"
                         ? "bg-primary text-primary-foreground"
                         : "bg-muted text-muted-foreground"
-                    )}
-                  >
-                    {msg.role === "assistant" ? (
-                      <BotIcon className="w-4 h-4" />
-                    ) : (
-                      <UserIcon className="w-4 h-4" />
-                    )}
-                  </AvatarFallback>
-                </Avatar>
+                    )}>
+                      {msg.role === "assistant" ? (
+                        <BotIcon className="w-4 h-4" />
+                      ) : (
+                        <UserIcon className="w-4 h-4" />
+                      )}
+                    </AvatarFallback>
+                  </Avatar>
 
-                <div
-                  className={cn(
-                    "flex flex-col gap-1 max-w-[80%]",
-                    msg.role === "user" ? "items-end" : "items-start"
-                  )}
-                >
                   <div
                     className={cn(
-                      "rounded-2xl px-4 py-2.5 text-sm leading-relaxed whitespace-pre-wrap",
-                      msg.role === "user"
-                        ? "bg-primary text-primary-foreground rounded-tr-sm"
-                        : "bg-muted text-foreground rounded-tl-sm"
+                      "flex flex-col gap-1 max-w-[75%]",
+                      msg.role === "user" ? "items-end" : "items-start"
                     )}
                   >
-                    {msg.content}
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs text-muted-foreground">
-                      {formatTime(msg.createdAt)}
-                    </span>
-                    {msg.totalTokens && msg.totalTokens > 0 && (
-                      <span className="text-xs text-muted-foreground">
-                        · {msg.totalTokens} tokens
-                      </span>
+                    <div
+                      className={cn(
+                        "rounded-2xl px-4 py-2.5 text-sm leading-relaxed whitespace-pre-wrap",
+                        msg.role === "user"
+                          ? "bg-primary text-primary-foreground rounded-tr-sm"
+                          : "bg-muted text-foreground rounded-tl-sm"
+                      )}
+                    >
+                      {msg.content}
+                      {msg.streaming && (
+                        <span className="inline-block w-1.5 h-3.5 ml-0.5 bg-foreground/50 animate-pulse rounded-sm align-middle" />
+                      )}
+                    </div>
+                    {!msg.streaming && (
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs text-muted-foreground">
+                          {formatTime(msg.createdAt)}
+                        </span>
+                        {msg.totalTokens && msg.totalTokens > 0 && (
+                          <span className="text-xs text-muted-foreground">
+                            · {msg.totalTokens} tokens
+                          </span>
+                        )}
+                      </div>
                     )}
                   </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
 
-            {loading && (
+            {/* Typing dots — only while waiting for the first stream event */}
+            {loading && !isStreaming && (
               <div className="flex gap-3">
                 <Avatar className="w-8 h-8 shrink-0 mt-0.5">
                   <AvatarFallback className="bg-primary text-primary-foreground text-xs">
@@ -386,7 +467,7 @@ export default function ChatPage() {
 
             <div ref={bottomRef} />
           </div>
-        </ScrollArea>
+        </div>
 
         {/* Input */}
         <div className="border-t border-border p-4 shrink-0">
@@ -400,7 +481,7 @@ export default function ChatPage() {
             <Input
               value={input}
               onChange={(e) => setInput(e.target.value)}
-              placeholder="Message GPT-4o..."
+              placeholder="Message..."
               className="flex-1"
               disabled={loading}
               autoFocus
@@ -414,7 +495,7 @@ export default function ChatPage() {
             </Button>
           </form>
           <p className="text-xs text-center text-muted-foreground mt-2">
-            Powered by Lava Gateway · OpenAI GPT-4o
+            Powered by Lava Gateway{selectedModel ? ` · ${selectedModel}` : ""}
           </p>
         </div>
       </main>
@@ -423,7 +504,7 @@ export default function ChatPage() {
       <div className="flex-1 bg-black relative overflow-hidden">
         <GlobeView arcs={arcs} markers={markers} autoRotate />
 
-        {/* Overlay: arc legend (only shown while arcs are active) */}
+        {/* Arc legend — visible while arcs are active */}
         {arcs.length > 0 && (
           <div className="absolute bottom-4 left-1/2 -translate-x-1/2 flex gap-3 bg-black/60 backdrop-blur-sm rounded-full px-4 py-2 text-xs text-white pointer-events-none">
             {arcs.some((a) => a.color === USER_COLOR) && (
