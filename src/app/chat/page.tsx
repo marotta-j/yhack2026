@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
@@ -16,10 +16,22 @@ import {
   UserIcon,
   LoaderIcon,
   ZapIcon,
+  LayersIcon,
+  ChevronDownIcon,
+  ChevronUpIcon,
 } from "lucide-react";
 import Link from "next/link";
 import { GlobeView, ArcData, MarkerData } from "@/components/Globe/GlobeView";
-import { resolveDataCenter } from "@/lib/datacenterLocations";
+import {
+  resolveClosestDataCenter,
+  resolveDataCenter,
+  ALL_DATA_CENTERS,
+  ALL_PROVIDERS,
+  PROVIDER_COLORS,
+  MODEL_PROVIDERS,
+} from "@/lib/datacenterLocations";
+
+// ─── Types ────────────────────────────────────────────────────────────────────
 
 interface Message {
   _id: string;
@@ -38,7 +50,26 @@ interface Conversation {
   updatedAt: string;
 }
 
-const USER_COLOR = "#60a5fa"; // blue — user marker dot only (arcs use the model's color)
+// ─── Constants ────────────────────────────────────────────────────────────────
+
+const USER_COLOR = "#60a5fa";
+
+/** DC count per provider — used in the toggle badge. */
+const PROVIDER_COUNTS = ALL_PROVIDERS.reduce<Record<string, number>>((acc, p) => {
+  acc[p] = ALL_DATA_CENTERS.filter((d) => d.provider === p).length;
+  return acc;
+}, {});
+
+/** Which model names use each provider (for the sub-label in the toggle). */
+const PROVIDER_MODELS: Record<string, string[]> = {};
+for (const [model, providers] of Object.entries(MODEL_PROVIDERS)) {
+  for (const p of providers) {
+    if (!PROVIDER_MODELS[p]) PROVIDER_MODELS[p] = [];
+    PROVIDER_MODELS[p].push(model);
+  }
+}
+
+// ─── Component ────────────────────────────────────────────────────────────────
 
 export default function ChatPage() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
@@ -55,18 +86,28 @@ export default function ChatPage() {
   const [arcs, setArcs] = useState<ArcData[]>([]);
   const [markers, setMarkers] = useState<MarkerData[]>([]);
   const [userLocation, setUserLocation] = useState<{ lat: number; lng: number } | null>(null);
+  // Ref so async streaming handler always sees the latest coordinates
+  const userLocationRef = useRef<{ lat: number; lng: number } | null>(null);
 
-  // Load conversation list
+  // Provider toggle — all on by default
+  const [enabledProviders, setEnabledProviders] = useState<Set<string>>(
+    () => new Set(ALL_PROVIDERS),
+  );
+  const [togglePanelOpen, setTogglePanelOpen] = useState(true);
+
+  // ── Load conversation list ──────────────────────────────────────────────────
   useEffect(() => {
     fetchConversations();
   }, []);
 
-  // Resolve user IP → coordinates and place the "You" marker
+  // ── Resolve user IP → coordinates and place "You" marker ───────────────────
   useEffect(() => {
     fetch("/api/geolocate")
       .then((r) => r.json())
       .then((data) => {
-        setUserLocation({ lat: data.lat, lng: data.lng });
+        const loc = { lat: data.lat, lng: data.lng };
+        setUserLocation(loc);
+        userLocationRef.current = loc;
         setMarkers([
           {
             id: "user",
@@ -82,13 +123,13 @@ export default function ChatPage() {
       .catch(() => {});
   }, []);
 
-  // Load messages when active conversation changes
+  // ── Load messages when active conversation changes ──────────────────────────
   useEffect(() => {
     if (!activeId) {
       setMessages([]);
       return;
     }
-    if (isStreamingRef.current) return; // don't overwrite local state mid-stream
+    if (isStreamingRef.current) return;
     setLoadingMessages(true);
     fetch(`/api/conversations/${activeId}/messages`)
       .then((r) => r.json())
@@ -96,10 +137,32 @@ export default function ChatPage() {
       .finally(() => setLoadingMessages(false));
   }, [activeId]);
 
-  // Scroll to bottom on new messages
+  // ── Scroll to bottom on new messages ───────────────────────────────────────
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, loading]);
+
+  // ── Background DC markers recomputed whenever the toggle changes ────────────
+  const bgDcMarkers = useMemo<MarkerData[]>(() => {
+    return ALL_DATA_CENTERS.filter((d) => enabledProviders.has(d.provider)).map((d) => ({
+      id: `bg-${d.id}`,
+      lat: d.lat,
+      lng: d.lng,
+      color: d.color,
+      label: `${d.name} — ${d.provider}${d.region ? ` (${d.region})` : ""}`,
+      radius: 0.22,
+      altitude: 0.004,
+      pulse: false,
+    }));
+  }, [enabledProviders]);
+
+  // Merge background DC dots with user / active-routing markers
+  const allMarkers = useMemo<MarkerData[]>(
+    () => [...bgDcMarkers, ...markers],
+    [bgDcMarkers, markers],
+  );
+
+  // ── Helpers ────────────────────────────────────────────────────────────────
 
   async function fetchConversations() {
     const res = await fetch("/api/conversations");
@@ -113,6 +176,23 @@ export default function ChatPage() {
     setInput("");
     setSelectedModel(null);
   }
+
+  function toggleProvider(provider: string) {
+    setEnabledProviders((prev) => {
+      const next = new Set(prev);
+      if (next.has(provider)) next.delete(provider);
+      else next.add(provider);
+      return next;
+    });
+  }
+
+  function toggleAllProviders() {
+    setEnabledProviders((prev) =>
+      prev.size === ALL_PROVIDERS.length ? new Set() : new Set(ALL_PROVIDERS),
+    );
+  }
+
+  // ── Send message ───────────────────────────────────────────────────────────
 
   async function handleSend() {
     const text = input.trim();
@@ -147,9 +227,8 @@ export default function ChatPage() {
       const decoder = new TextDecoder();
       let buffer = "";
 
-      // Globe: track arcs within this request
       let outArcId: string | null = null;
-      let currentDatacenter = resolveDataCenter("gpt-4o"); // updated on model event
+      let currentDatacenter = resolveDataCenter("gpt-4o");
 
       while (true) {
         const { done, value } = await reader.read();
@@ -164,13 +243,13 @@ export default function ChatPage() {
           try {
             const event = JSON.parse(line);
 
+            // ── model event ────────────────────────────────────────────────
             if (event.type === "model") {
               setSelectedModel(event.model);
               if (!activeId) setActiveId(event.conversationId);
               setMessages((prev) => [
                 ...prev.filter((m) => m._id !== tempId),
                 event.userMessage,
-                // Rightsizing notice
                 {
                   _id: `rightsizing-${streamingId}`,
                   role: "assistant",
@@ -178,7 +257,6 @@ export default function ChatPage() {
                   rightsizingModel: event.model,
                   createdAt: new Date().toISOString(),
                 },
-                // Streaming assistant bubble
                 {
                   _id: streamingId,
                   role: "assistant",
@@ -188,16 +266,17 @@ export default function ChatPage() {
                 },
               ]);
 
-              // ── Globe: outbound arc in the selected model's color ─────────
-              if (userLocation) {
-                currentDatacenter = resolveDataCenter(event.model);
+              // Globe: arc to the CLOSEST data center for this model
+              const loc = userLocationRef.current;
+              if (loc) {
+                currentDatacenter = resolveClosestDataCenter(event.model, loc.lat, loc.lng);
                 outArcId = `arc-out-${Date.now()}`;
                 setArcs((prev) => [
                   ...prev,
                   {
                     id: outArcId!,
-                    startLat: userLocation.lat,
-                    startLng: userLocation.lng,
+                    startLat: loc.lat,
+                    startLng: loc.lng,
                     endLat: currentDatacenter.lat,
                     endLng: currentDatacenter.lng,
                     color: currentDatacenter.color,
@@ -205,8 +284,7 @@ export default function ChatPage() {
                   },
                 ]);
                 setMarkers((prev) => {
-                  const dcId = `dc-${currentDatacenter.lat}-${currentDatacenter.lng}`;
-                  // Don't add a duplicate if this datacenter is already pinned
+                  const dcId = `dc-${currentDatacenter.id}`;
                   if (prev.some((m) => m.id === dcId)) return prev;
                   return [
                     ...prev,
@@ -222,8 +300,8 @@ export default function ChatPage() {
                   ];
                 });
               }
-              // ─────────────────────────────────────────────────────────────
 
+            // ── delta event ────────────────────────────────────────────────
             } else if (event.type === "delta") {
               setMessages((prev) =>
                 prev.map((m) =>
@@ -232,6 +310,8 @@ export default function ChatPage() {
                     : m,
                 ),
               );
+
+            // ── done event ─────────────────────────────────────────────────
             } else if (event.type === "done") {
               setMessages((prev) => [
                 ...prev.filter((m) => m._id !== streamingId),
@@ -239,41 +319,37 @@ export default function ChatPage() {
               ]);
               fetchConversations();
 
-              // ── Globe: replace animated arc with permanent line ───────────
-              if (userLocation && outArcId) {
+              const loc = userLocationRef.current;
+              if (loc && outArcId) {
                 const staticArcId = `arc-static-${Date.now()}`;
                 const inArcId = `arc-in-${Date.now()}`;
                 setArcs((prev) => [
-                  // Remove the animated outbound arc
                   ...prev.filter((a) => a.id !== outArcId),
-                  // Permanent solid line (user → datacenter) in model color
                   {
                     id: staticArcId,
-                    startLat: userLocation.lat,
-                    startLng: userLocation.lng,
+                    startLat: loc.lat,
+                    startLng: loc.lng,
                     endLat: currentDatacenter.lat,
                     endLng: currentDatacenter.lng,
                     color: currentDatacenter.color,
                     static: true,
                   },
-                  // Brief inbound animation (datacenter → user) to signal arrival
                   {
                     id: inArcId,
                     startLat: currentDatacenter.lat,
                     startLng: currentDatacenter.lng,
-                    endLat: userLocation.lat,
-                    endLng: userLocation.lng,
+                    endLat: loc.lat,
+                    endLng: loc.lng,
                     color: currentDatacenter.color,
                     animateTime: 900,
                   },
                 ]);
-                // Remove only the transient inbound arc after one cycle
                 setTimeout(() => {
                   setArcs((prev) => prev.filter((a) => a.id !== inArcId));
                 }, 1600);
               }
-              // ─────────────────────────────────────────────────────────────
 
+            // ── error event ────────────────────────────────────────────────
             } else if (event.type === "error") {
               setMessages((prev) =>
                 prev.filter((m) => m._id !== tempId && m._id !== streamingId),
@@ -298,8 +374,18 @@ export default function ChatPage() {
 
   const isStreaming = messages.some((m) => m.streaming);
 
+  // The DC shown in the bottom legend (uses real user location when available)
+  const activeDc = selectedModel
+    ? userLocation
+      ? resolveClosestDataCenter(selectedModel, userLocation.lat, userLocation.lng)
+      : resolveDataCenter(selectedModel)
+    : null;
+
+  // ── Render ─────────────────────────────────────────────────────────────────
+
   return (
     <div className="flex h-screen bg-background text-foreground overflow-hidden">
+
       {/* ── Sidebar ──────────────────────────────────────────────────────────── */}
       <aside className="w-64 flex flex-col border-r border-border bg-card shrink-0">
         <div className="flex items-center justify-between p-4 border-b border-border">
@@ -331,7 +417,7 @@ export default function ChatPage() {
                   "hover:bg-accent hover:text-accent-foreground",
                   activeId === conv._id
                     ? "bg-accent text-accent-foreground"
-                    : "text-muted-foreground"
+                    : "text-muted-foreground",
                 )}
               >
                 <div className="flex items-center gap-2">
@@ -349,7 +435,10 @@ export default function ChatPage() {
         <Separator />
         <div className="p-3">
           <Link href="/stats">
-            <Button variant="ghost" className="w-full justify-start gap-2 text-muted-foreground">
+            <Button
+              variant="ghost"
+              className="w-full justify-start gap-2 text-muted-foreground"
+            >
               <BarChart2Icon className="w-4 h-4" />
               Statistics
             </Button>
@@ -370,7 +459,9 @@ export default function ChatPage() {
               <h1 className="font-semibold text-muted-foreground">New Conversation</h1>
             )}
           </div>
-          <Badge variant="secondary" className="text-xs">{selectedModel ?? "—"}</Badge>
+          <Badge variant="secondary" className="text-xs">
+            {selectedModel ?? "—"}
+          </Badge>
         </div>
 
         {/* Messages */}
@@ -392,14 +483,15 @@ export default function ChatPage() {
             )}
 
             {messages.map((msg) => {
-              // Rightsizing notice — small centered label between messages
               if (msg.rightsizingModel) {
                 return (
                   <div key={msg._id} className="flex items-center justify-center gap-2">
                     <ZapIcon className="w-3 h-3 text-muted-foreground" />
                     <span className="text-xs text-muted-foreground">
                       Rightsizing:{" "}
-                      <span className="font-medium text-foreground">{msg.rightsizingModel}</span>{" "}
+                      <span className="font-medium text-foreground">
+                        {msg.rightsizingModel}
+                      </span>{" "}
                       selected for this prompt
                     </span>
                   </div>
@@ -411,16 +503,18 @@ export default function ChatPage() {
                   key={msg._id}
                   className={cn(
                     "flex gap-3",
-                    msg.role === "user" ? "flex-row-reverse" : "flex-row"
+                    msg.role === "user" ? "flex-row-reverse" : "flex-row",
                   )}
                 >
                   <Avatar className="w-8 h-8 shrink-0 mt-0.5">
-                    <AvatarFallback className={cn(
-                      "text-xs",
-                      msg.role === "assistant"
-                        ? "bg-primary text-primary-foreground"
-                        : "bg-muted text-muted-foreground"
-                    )}>
+                    <AvatarFallback
+                      className={cn(
+                        "text-xs",
+                        msg.role === "assistant"
+                          ? "bg-primary text-primary-foreground"
+                          : "bg-muted text-muted-foreground",
+                      )}
+                    >
                       {msg.role === "assistant" ? (
                         <BotIcon className="w-4 h-4" />
                       ) : (
@@ -432,7 +526,7 @@ export default function ChatPage() {
                   <div
                     className={cn(
                       "flex flex-col gap-1 max-w-[75%]",
-                      msg.role === "user" ? "items-end" : "items-start"
+                      msg.role === "user" ? "items-end" : "items-start",
                     )}
                   >
                     <div
@@ -440,7 +534,7 @@ export default function ChatPage() {
                         "rounded-2xl px-4 py-2.5 text-sm leading-relaxed whitespace-pre-wrap",
                         msg.role === "user"
                           ? "bg-primary text-primary-foreground rounded-tr-sm"
-                          : "bg-muted text-foreground rounded-tl-sm"
+                          : "bg-muted text-foreground rounded-tl-sm",
                       )}
                     >
                       {msg.content}
@@ -520,22 +614,115 @@ export default function ChatPage() {
 
       {/* ── Globe panel ──────────────────────────────────────────────────────── */}
       <div className="flex-1 bg-black relative overflow-hidden">
-        <GlobeView arcs={arcs} markers={markers} autoRotate />
+        <GlobeView arcs={arcs} markers={allMarkers} autoRotate />
 
-        {/* Arc legend — shows active routing info while a request is in flight */}
-        {loading && selectedModel && (() => {
-          const dc = resolveDataCenter(selectedModel);
-          return (
-            <div className="absolute bottom-4 left-1/2 -translate-x-1/2 flex gap-3 bg-black/60 backdrop-blur-sm rounded-full px-4 py-2 text-xs text-white pointer-events-none">
-              <span className="flex items-center gap-1.5">
-                <span className="w-2 h-2 rounded-full" style={{ background: dc.color }} />
-                {isStreaming ? "Streaming from" : "Routing to"}{" "}
-                <span className="font-medium">{selectedModel}</span>
-                {" "}·{" "}{dc.name}
+        {/* ── Provider toggle panel ───────────────────────────────────────── */}
+        <div className="absolute top-4 right-4 z-10 w-52">
+
+          {/* Header / collapse button */}
+          <button
+            onClick={() => setTogglePanelOpen((o) => !o)}
+            className="w-full flex items-center justify-between gap-2 bg-black/70 backdrop-blur-sm rounded-xl px-3 py-2 text-white hover:bg-black/80 transition-colors"
+          >
+            <div className="flex items-center gap-2">
+              <LayersIcon className="w-3.5 h-3.5 text-white/60" />
+              <span className="text-xs font-semibold tracking-wide">Data Centers</span>
+              <span className="text-[10px] text-white/40">
+                {enabledProviders.size}/{ALL_PROVIDERS.length}
               </span>
             </div>
-          );
-        })()}
+            {togglePanelOpen
+              ? <ChevronUpIcon className="w-3.5 h-3.5 text-white/50" />
+              : <ChevronDownIcon className="w-3.5 h-3.5 text-white/50" />
+            }
+          </button>
+
+          {/* Provider rows */}
+          {togglePanelOpen && (
+            <div className="mt-1 bg-black/70 backdrop-blur-sm rounded-xl overflow-hidden">
+
+              {/* All / None shortcut */}
+              <button
+                onClick={toggleAllProviders}
+                className="w-full flex items-center justify-between px-3 py-1.5 text-[10px] text-white/40 hover:text-white/70 hover:bg-white/5 transition-colors border-b border-white/10"
+              >
+                <span className="uppercase tracking-widest">Providers</span>
+                <span className="underline underline-offset-2">
+                  {enabledProviders.size === ALL_PROVIDERS.length ? "Hide all" : "Show all"}
+                </span>
+              </button>
+
+              {ALL_PROVIDERS.map((provider) => {
+                const on = enabledProviders.has(provider);
+                const models = PROVIDER_MODELS[provider] ?? [];
+                return (
+                  <button
+                    key={provider}
+                    onClick={() => toggleProvider(provider)}
+                    className={cn(
+                      "w-full flex items-center gap-2.5 px-3 py-2 text-left transition-all hover:bg-white/5",
+                      on ? "opacity-100" : "opacity-35",
+                    )}
+                  >
+                    <span
+                      className="w-2.5 h-2.5 rounded-full shrink-0 ring-1 ring-white/20"
+                      style={{ background: PROVIDER_COLORS[provider] }}
+                    />
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center justify-between gap-1">
+                        <span className="text-xs text-white font-medium truncate">
+                          {provider}
+                        </span>
+                        <span
+                          className="text-[10px] shrink-0 tabular-nums"
+                          style={{ color: PROVIDER_COLORS[provider] + "bb" }}
+                        >
+                          {PROVIDER_COUNTS[provider]}
+                        </span>
+                      </div>
+                      {models.length > 0 && (
+                        <p className="text-[10px] text-white/35 truncate">
+                          {models.join(", ")}
+                        </p>
+                      )}
+                    </div>
+                  </button>
+                );
+              })}
+
+              {/* Total count footer */}
+              <div className="px-3 py-1.5 border-t border-white/10 flex items-center justify-between">
+                <span className="text-[10px] text-white/30">Visible DCs</span>
+                <span className="text-[10px] text-white/50 tabular-nums font-medium">
+                  {ALL_DATA_CENTERS.filter((d) => enabledProviders.has(d.provider)).length}
+                  {" / "}
+                  {ALL_DATA_CENTERS.length}
+                </span>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* ── Active routing legend ──────────────────────────────────────────── */}
+        {loading && activeDc && (
+          <div className="absolute bottom-4 left-1/2 -translate-x-1/2 flex gap-3 bg-black/60 backdrop-blur-sm rounded-full px-4 py-2 text-xs text-white pointer-events-none">
+            <span className="flex items-center gap-1.5">
+              <span
+                className="w-2 h-2 rounded-full animate-pulse"
+                style={{ background: activeDc.color }}
+              />
+              {isStreaming ? "Streaming from" : "Routing to"}{" "}
+              <span className="font-medium">{selectedModel}</span>
+              {" · "}
+              <span style={{ color: activeDc.color + "dd" }}>{activeDc.provider}</span>
+              {" · "}
+              {activeDc.name}
+              {activeDc.region && (
+                <span className="text-white/40"> ({activeDc.region})</span>
+              )}
+            </span>
+          </div>
+        )}
       </div>
     </div>
   );
