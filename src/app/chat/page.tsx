@@ -204,18 +204,23 @@ export default function ChatPage() {
                     animateTime: 1200,
                   },
                 ]);
-                setMarkers((prev) => [
-                  ...prev.filter((m) => m.id !== "datacenter"),
-                  {
-                    id: "datacenter",
-                    lat: currentDatacenter.lat,
-                    lng: currentDatacenter.lng,
-                    color: currentDatacenter.color,
-                    label: `${currentDatacenter.name} — ${currentDatacenter.provider}`,
-                    radius: 0.7,
-                    pulse: true,
-                  },
-                ]);
+                setMarkers((prev) => {
+                  const dcId = `dc-${currentDatacenter.lat}-${currentDatacenter.lng}`;
+                  // Don't add a duplicate if this datacenter is already pinned
+                  if (prev.some((m) => m.id === dcId)) return prev;
+                  return [
+                    ...prev,
+                    {
+                      id: dcId,
+                      lat: currentDatacenter.lat,
+                      lng: currentDatacenter.lng,
+                      color: currentDatacenter.color,
+                      label: `${currentDatacenter.name} — ${currentDatacenter.provider}`,
+                      radius: 0.7,
+                      pulse: true,
+                    },
+                  ];
+                });
               }
               // ─────────────────────────────────────────────────────────────
 
