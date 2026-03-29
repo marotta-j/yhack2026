@@ -43,7 +43,6 @@ import {
 import {
   carbonColor,
   carbonLabel,
-  carbonTooltip,
   carbonTierOf,
   CARBON_TIERS,
   CARBON_GRADIENT,
@@ -806,11 +805,12 @@ export default function ChatPage() {
       <div className="flex-1 bg-black relative overflow-hidden">
         <GlobeView arcs={arcs} markers={allMarkers} autoRotate initialPointOfView={userLocation ?? undefined} />
 
-        {/* ── Provider toggle panel ───────────────────────────────────────── */}
-        <div className="absolute top-4 right-4 z-10 w-52">
+        {/* ── Provider toggle panel (high z: above globe CSS2D labels / canvas) ─ */}
+        <div className="absolute top-4 right-4 z-[1000] w-52 pointer-events-auto">
 
           {/* Header / collapse button */}
           <button
+            type="button"
             onClick={() => setTogglePanelOpen((o) => !o)}
             className="w-full flex items-center justify-between gap-2 bg-black/70 backdrop-blur-sm rounded-xl px-3 py-2 text-white hover:bg-black/80 transition-colors"
           >
@@ -843,22 +843,24 @@ export default function ChatPage() {
                   )}
                 </div>
                 <button
+                  type="button"
                   onClick={() => setCarbonMode((m) => !m)}
                   className={cn(
                     "relative shrink-0 w-8 h-4 rounded-full transition-colors",
                     carbonMode ? "bg-emerald-500" : "bg-white/20",
                   )}
                   aria-label="Toggle carbon intensity mode"
+                  aria-pressed={carbonMode}
                 >
                   {carbonLoading && carbonMode && (
-                    <span className="absolute inset-0 flex items-center justify-center">
+                    <span className="pointer-events-none absolute inset-0 flex items-center justify-center">
                       <span className="w-2 h-2 rounded-full bg-white/60 animate-pulse" />
                     </span>
                   )}
                   <span
                     className={cn(
-                      "absolute top-0.5 w-3 h-3 rounded-full bg-white shadow transition-transform",
-                      carbonMode ? "translate-x-4" : "translate-x-0.5",
+                      "pointer-events-none absolute left-0.5 top-0.5 w-3 h-3 rounded-full bg-white shadow transition-transform",
+                      carbonMode ? "translate-x-4" : "translate-x-0",
                     )}
                   />
                 </button>
