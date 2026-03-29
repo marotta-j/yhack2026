@@ -109,79 +109,30 @@ export async function POST(req: Request) {
       } else {
         model_id = selectModelForDifficulty(st.difficulty);
       }
+      const dc = resolveClosestDataCenter(model_id, userLat, userLng);
+      const grid_carbon_intensity = await getGridCarbonIntensity(dc.lat, dc.lng);
+      const eco_score = (MODEL_INTENSITY[model_id] ?? 1.0) * grid_carbon_intensity;
+      console.log(`[chat] Routed subtask: type=${st.type}${st.search_type ? `(${st.search_type})` : ""} difficulty=${st.difficulty} → model=${model_id} dc=${dc.id}`);
+      return {
+        ...st,
+        model_id,
+        lava_model_string: model_id,
+        datacenter_id: dc.id,
+        datacenter_lat: dc.lat,
+        datacenter_lng: dc.lng,
+        grid_carbon_intensity,
+        eco_score,
+      };
+    }),
+  );
 
-      const reader = openaiRes.body!.getReader();
-      const decoder = new TextDecoder();
-      let sseBuffer = "";
-      let fullContent = "";
-      let usage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        sseBuffer += decoder.decode(value, { stream: true });
-        const lines = sseBuffer.split("\n");
-        sseBuffer = lines.pop()!;
-
-        for (const line of lines) {
-          if (!line.startsWith("data: ")) continue;
-          const data = line.slice(6).trim();
-          if (data === "[DONE]") continue;
-          try {
-            const parsed = JSON.parse(data);
-            if (parsed.usage) usage = parsed.usage;
-            const delta = parsed.choices?.[0]?.delta?.content ?? "";
-            if (delta) {
-              fullContent += delta;
-              controller.enqueue(
-                enc.encode(JSON.stringify({ type: "delta", content: delta }) + "\n"),
-              );
-            }
-          } catch {
-            // skip malformed SSE line
-          }
-        }
-      }
-
-      // Back-fill token count onto the user message now that we have usage data
-      await Message.findByIdAndUpdate(userMessage._id, {
-        promptTokens: usage.prompt_tokens ?? 0,
-        totalTokens: usage.prompt_tokens ?? 0,
-      });
-
-      // Save assistant message
-      const assistantMessage = await Message.create({
-        conversationId: conversationRef._id,
-        role: "assistant",
-        content: fullContent,
-        promptTokens: usage.prompt_tokens ?? 0,
-        completionTokens: usage.completion_tokens ?? 0,
-        totalTokens: usage.total_tokens ?? 0,
-      });
-
-      const isFirstMessage = conversationRef.messageCount === 0;
-      await Conversation.findByIdAndUpdate(conversationRef._id, {
-        $inc: { messageCount: 2, totalTokens: usage.total_tokens ?? 0 },
-        ...(isFirstMessage && { title: content.trim().slice(0, 60) }),
-        updatedAt: new Date(),
-      });
-
-      controller.enqueue(
-        enc.encode(
-          JSON.stringify({
-            type: "done",
-            assistantMessage,
-            userMessageId: userMessage._id.toString(),
-            userMessageTokens: usage.prompt_tokens ?? 0,
-          }) + "\n",
-        ),
-      );
-      controller.close();
-    },
-  });
-
-  return new Response(stream, {
-    headers: { "Content-Type": "application/x-ndjson" },
+  return NextResponse.json({
+    conversationId: conversation._id.toString(),
+    userMessage,
+    difficultyScore,
+    decomposer_tokens,
+    was_decomposed,
+    subtasks: routedSubtasks,
   });
 }
+
