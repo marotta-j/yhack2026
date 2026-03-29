@@ -87,6 +87,10 @@ interface Message {
   createdAt: string;
   streaming?: boolean;
   rightsizingModel?: string;
+  /** Present on per-subtask rightsizing rows when was_decomposed=true */
+  subtaskIndex?: number;
+  subtaskType?: string;
+  subtaskDifficulty?: number;
   carbon_report?: CarbonReport;
   /** Carbon cost in gCO₂ — prompt carbon for user messages, total carbon for assistant messages */
   carbon_cost?: number;
@@ -270,6 +274,9 @@ export default function ChatPage() {
   // Quick stats for sidebar widget
   const [quickStats, setQuickStats] = useState<{ totalCarbonCost: number; totalCarbonSaved: number } | null>(null);
 
+  // Which assistant message's arc is highlighted on the globe (null = all shown)
+  const [selectedMessageId, setSelectedMessageId] = useState<string | null>(null);
+
   /** True geolocation from /api/geolocate (your IP). */
   const [realLocation, setRealLocation] = useState<ResolvedGeo | null>(null);
   /** Optional spoof — persisted in localStorage, drives pin + routing. */
@@ -349,7 +356,8 @@ export default function ChatPage() {
           lng: loc.lng,
           color: USER_COLOR,
           label,
-          radius: 0.6,
+          radius: 0.38,
+          altitude: 0.005,
           pulse: true,
         },
       ];
@@ -379,6 +387,7 @@ export default function ChatPage() {
     }
     prevActiveIdRef.current = activeId;
 
+    setSelectedMessageId(null);
     if (!activeId) {
       setArcs([]);
       setMarkers((prev) => prev.filter((m) => m.id === "user"));
@@ -494,6 +503,16 @@ export default function ChatPage() {
     () => [...bgDcMarkers, ...markers],
     [bgDcMarkers, markers],
   );
+
+  // ── Dim arcs that don't belong to the selected message ────────────────────
+  const combinedArcs = useMemo<ArcData[]>(() => {
+    if (!selectedMessageId) return arcs;
+    return arcs.map((arc) =>
+      !arc.static || arc.messageId === selectedMessageId
+        ? arc
+        : { ...arc, color: "#3a3a3a" },
+    );
+  }, [arcs, selectedMessageId]);
 
   // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -664,6 +683,8 @@ export default function ChatPage() {
     let currentDatacenters: Map<number, ReturnType<typeof resolveClosestDataCenter>> = new Map();
     // Counter for staggering arc creation so same-batch subtasks don't fire simultaneously
     let arcStaggerCount = 0;
+    // Whether this prompt was split into multiple subtasks (set on "model" event)
+    let isMultiSubtask = false;
 
     try {
       const res = await fetch("/api/chat/execute", {
@@ -709,23 +730,29 @@ export default function ChatPage() {
             if (event.type === "model") {
               setSelectedModel(event.model);
               streamingConvIdRef.current = conversationId;
-              setMessages((prev) => [
-                ...prev,
-                {
-                  _id: `rightsizing-${streamingId}`,
-                  role: "assistant",
-                  content: "",
-                  rightsizingModel: event.model,
-                  createdAt: new Date().toISOString(),
-                },
-                {
+              isMultiSubtask = !!(event.was_decomposed && event.subtask_count > 1);
+              setMessages((prev) => {
+                const toAdd: Message[] = [];
+                // For single-subtask prompts, show the upfront rightsizing row immediately.
+                // For multi-subtask, individual rows are inserted per subtask_result event.
+                if (!isMultiSubtask) {
+                  toAdd.push({
+                    _id: `rightsizing-${streamingId}`,
+                    role: "assistant",
+                    content: "",
+                    rightsizingModel: event.model,
+                    createdAt: new Date().toISOString(),
+                  });
+                }
+                toAdd.push({
                   _id: streamingId,
                   role: "assistant",
                   content: "",
                   streaming: true,
                   createdAt: new Date().toISOString(),
-                },
-              ]);
+                });
+                return [...prev, ...toAdd];
+              });
 
               // Globe: fly camera to centroid of all subtask DCs
               const loc = userLocationRef.current;
@@ -796,7 +823,8 @@ export default function ChatPage() {
                         lng: dc.lng,
                         color: dc.color,
                         label: `${dc.name} — ${dc.provider}`,
-                        radius: 0.7,
+                        radius: 0.45,
+                        altitude: 0.005,
                         pulse: true,
                       },
                     ];
@@ -845,9 +873,29 @@ export default function ChatPage() {
                     endLng: dc.lng,
                     color,
                     static: true,
+                    messageId: streamingId, // temp — replaced with real _id on "done"
                   },
                 ]);
                 outArcIdsByIndex.delete(idx);
+              }
+              // Insert a per-subtask rightsizing row above the streaming message
+              if (isMultiSubtask) {
+                const rowId = `rightsizing-sub-${streamingId}-${idx}`;
+                setMessages((prev) => {
+                  const streamIdx = prev.findIndex((m) => m._id === streamingId);
+                  const row: Message = {
+                    _id: rowId,
+                    role: "assistant",
+                    content: "",
+                    rightsizingModel: event.subtask.model_id,
+                    subtaskIndex: idx + 1,
+                    subtaskType: event.subtask.type,
+                    subtaskDifficulty: event.subtask.difficulty,
+                    createdAt: new Date().toISOString(),
+                  };
+                  if (streamIdx === -1) return [...prev, row];
+                  return [...prev.slice(0, streamIdx), row, ...prev.slice(streamIdx)];
+                });
               }
               setMessages((prev) =>
                 prev.map((m) =>
@@ -860,6 +908,18 @@ export default function ChatPage() {
             // ── done event ───────────────────────────────────────────────
             } else if (event.type === "done") {
               setReconstructionState("complete");
+              // Stamp all arcs that were temporarily tagged with streamingId → real message _id
+              setArcs((prev) =>
+                prev.map((a) =>
+                  a.messageId === streamingId
+                    ? { ...a, messageId: event.assistantMessage._id }
+                    : a,
+                ),
+              );
+              const panelSnapshot: SubtaskPanelSnapshot | undefined =
+                subtasks.length > 1
+                  ? { subtasks, subtaskResults: localSubtaskResults, difficultyScore }
+                  : undefined;
               if (subtasks.length > 1) {
                 const snap: SubtaskPanelSnapshot = {
                   subtasks,
@@ -1154,26 +1214,49 @@ export default function ChatPage() {
 
             {messages.map((msg) => {
               if (msg.rightsizingModel) {
+                const isPerSubtask = msg.subtaskIndex !== undefined;
                 return (
                   <div key={msg._id} className="flex items-center justify-center gap-2">
                     <ZapIcon className="w-3 h-3 text-muted-foreground" />
-                    <span className="text-xs text-muted-foreground">
-                      Rightsizing:{" "}
-                      <span className="font-medium text-foreground">
-                        {msg.rightsizingModel}
-                      </span>{" "}
-                      selected for this prompt
-                    </span>
+                    {isPerSubtask ? (
+                      <span className="text-xs text-muted-foreground">
+                        Subtask {msg.subtaskIndex}:{" "}
+                        <span className="font-medium text-foreground">{msg.rightsizingModel}</span>
+                        {msg.subtaskType && (
+                          <span> · <span className={cn(
+                            "font-medium",
+                            msg.subtaskType === "REASON" && "text-blue-400",
+                            msg.subtaskType === "WRITE"  && "text-green-400",
+                            msg.subtaskType === "SEARCH" && "text-orange-400",
+                          )}>{msg.subtaskType}</span></span>
+                        )}
+                        {msg.subtaskDifficulty != null && (
+                          <span className="text-muted-foreground"> · difficulty {msg.subtaskDifficulty}</span>
+                        )}
+                      </span>
+                    ) : (
+                      <span className="text-xs text-muted-foreground">
+                        Rightsizing:{" "}
+                        <span className="font-medium text-foreground">{msg.rightsizingModel}</span>
+                        {" "}selected for this prompt
+                      </span>
+                    )}
                   </div>
                 );
               }
 
+              const isSelected = selectedMessageId === msg._id;
+              const isClickable = msg.role === "assistant" && !msg.streaming;
+
               return (
                 <div
                   key={msg._id}
+                  onClick={isClickable ? () => setSelectedMessageId(isSelected ? null : msg._id) : undefined}
                   className={cn(
                     "flex gap-3",
                     msg.role === "user" ? "flex-row-reverse" : "flex-row",
+                    isClickable && "cursor-pointer",
+                    isSelected && "rounded-xl ring-1 ring-primary/40 bg-primary/5",
                   )}
                 >
                   <Avatar className="w-8 h-8 shrink-0 mt-0.5">
@@ -1503,7 +1586,7 @@ export default function ChatPage() {
 
       {/* ── Globe panel ──────────────────────────────────────────────────────── */}
       <div className="flex-1 bg-black relative overflow-hidden">
-        <GlobeView arcs={arcs} markers={allMarkers} autoRotate initialPointOfView={userLocation ?? undefined} />
+        <GlobeView arcs={combinedArcs} markers={allMarkers} autoRotate initialPointOfView={userLocation ?? undefined} />
 
         {/* ── Provider toggle panel (high z: above globe CSS2D labels / canvas) ─ */}
         <div className="absolute top-4 right-4 z-[1000] w-52 pointer-events-auto">

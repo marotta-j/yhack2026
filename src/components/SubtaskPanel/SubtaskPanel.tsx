@@ -73,7 +73,7 @@ function OrchestraRow({
         ) : isError ? (
           <XCircleIcon className="w-3.5 h-3.5 text-rose-400" />
         ) : (
-          <ClockIcon className="w-3 h-3 text-white/20" />
+          <ClockIcon className="w-3 h-3 text-white/70" />
         )}
       </div>
 

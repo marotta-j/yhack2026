@@ -26,6 +26,8 @@ export interface ArcData {
    * animation — use this for permanent history trails.
    */
   static?: boolean;
+  /** The assistant message this arc belongs to — used for per-message highlighting. */
+  messageId?: string;
 }
 
 /** A dot (optionally with a pulsing ring) placed at a lat/lng. */
