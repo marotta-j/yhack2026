@@ -1,39 +1,39 @@
 import { SubtaskResult, CarbonReport } from "@/types";
 import { resolveClosestDataCenter } from "@/lib/datacenterLocations";
 import { getGridCarbonIntensity } from "@/lib/electricitymap";
-
-/** Relative energy-per-token on a unitless scale (gemini-2.0-flash = 1.0 baseline). */
-export const MODEL_INTENSITY: Record<string, number> = {
-  "gemini-2.0-flash": 1.0,
-  "gpt-4o-mini": 1.5,
-  "grok-3-fast": 2.0,
-  "claude-sonnet-4-6": 3.0,
-  "claude-opus-4-6": 8.0,
-  // Search models — low compute; cost is dominated by the external API call, not inference
-  "serper-search": 0.3,
-  "exa-search": 0.5,
-};
+import { FLOPS_PER_TOKEN, MODELS } from "@/config/models";
 
 /**
- * Carbon cost for a single LLM call.
- * Units: tokens × intensity × gCO₂/kWh — treated as a relative score, not real grams.
+ * H100 system-level energy efficiency constant.
+ * Derived from full-node power draw (GPU + CPU + memory + networking + PUE),
+ * not just GPU die: ~0.39 J/token for 70B models at batch-128.
+ * Units: kWh per FLOP.
+ */
+export const KWH_PER_FLOP_H100 = 3.96e-15;
+
+/**
+ * Carbon cost for a single LLM (or search) call, using physics-grounded FLOPs accounting.
+ *
+ * Formula: tokens × (flops_per_token × 1e9) × KWH_PER_FLOP_H100 × gridCarbonIntensity
+ * Units: result is in gCO₂ (grid intensity is gCO₂/kWh, energy is kWh).
  */
 export function calculateSubtaskCarbon(
   tokens: number,
   modelId: string,
   gridCarbonIntensity: number,
 ): number {
-  const intensity = MODEL_INTENSITY[modelId] ?? 1.0;
-  const cost = tokens * intensity * gridCarbonIntensity;
+  const flops = FLOPS_PER_TOKEN[modelId] ?? 14; // default to lightest known model
+  const energyKwh = tokens * flops * 1e9 * KWH_PER_FLOP_H100;
+  const cost = energyKwh * gridCarbonIntensity;
   console.log(
-    `[carbon] calculateSubtaskCarbon: ${tokens} tokens × ${intensity} intensity × ${gridCarbonIntensity} gCO₂/kWh = ${cost}`,
+    `[carbon] calculateSubtaskCarbon: ${tokens} tokens × ${flops} GFLOPs × 1e9 × ${KWH_PER_FLOP_H100} kWh/FLOP × ${gridCarbonIntensity} gCO₂/kWh = ${cost.toExponential(3)} gCO₂`,
   );
   return cost;
 }
 
 /**
- * What would it cost to send the same total tokens to Claude Opus 4.6
- * (the heaviest model) at the nearest Opus datacenter?
+ * What would it cost to send the same total tokens to the heaviest available
+ * model (highest flops_per_token) at its nearest datacenter?
  * Used as the "naive" baseline for savings calculation.
  */
 export async function calculateNaiveBaseline(
@@ -41,16 +41,16 @@ export async function calculateNaiveBaseline(
   userLat: number,
   userLng: number,
 ): Promise<number> {
-  const heavyModel = "claude-opus-4-6";
-  const dc = resolveClosestDataCenter(heavyModel, userLat, userLng);
+  const heavyModel = MODELS.reduce((a, b) =>
+    a.flops_per_token >= b.flops_per_token ? a : b,
+  );
+  const dc = resolveClosestDataCenter(heavyModel.model_id, userLat, userLng);
   console.log(
-    `[carbon] Naive baseline DC for ${heavyModel}: ${dc.id} (${dc.name})`,
+    `[carbon] Naive baseline model: ${heavyModel.model_id} (${heavyModel.flops_per_token} GFLOPs), DC: ${dc.id}`,
   );
   const gridCarbon = await getGridCarbonIntensity(dc.lat, dc.lng);
-  const baseline = totalTokens * (MODEL_INTENSITY[heavyModel] ?? 8.0) * gridCarbon;
-  console.log(
-    `[carbon] Naive baseline: ${totalTokens} tokens × ${MODEL_INTENSITY[heavyModel]} × ${gridCarbon} = ${baseline}`,
-  );
+  const baseline = calculateSubtaskCarbon(totalTokens, heavyModel.model_id, gridCarbon);
+  console.log(`[carbon] Naive baseline total: ${baseline.toExponential(3)} gCO₂`);
   return baseline;
 }
 
@@ -76,11 +76,11 @@ export function buildCarbonReport(
   const delta = naiveBaseline - total_carbon;
 
   console.log("[carbon] buildCarbonReport:", {
-    subtaskCarbon,
-    orchestration_overhead,
-    total_carbon,
-    naive_baseline: naiveBaseline,
-    delta,
+    subtaskCarbon: subtaskCarbon.toExponential(3),
+    orchestration_overhead: orchestration_overhead.toExponential(3),
+    total_carbon: total_carbon.toExponential(3),
+    naive_baseline: naiveBaseline.toExponential(3),
+    delta: delta.toExponential(3),
     savings_pct: naiveBaseline > 0 ? ((delta / naiveBaseline) * 100).toFixed(1) + "%" : "n/a",
   });
 
