@@ -103,6 +103,76 @@ interface Conversation {
 
 const USER_COLOR = "#60a5fa";
 
+/**
+ * Visual-only positions for globe markers — routing always uses the real
+ * coordinates in ALL_DATA_CENTERS.
+ *
+ * We run an iterative batch force-separation simulation so that every pair
+ * of background markers maintains at least `minDist` between their centres,
+ * where minDist = 2 × dotRadius × GAP_FACTOR.  This resolves both exact
+ * co-location and close-neighbour overlaps regardless of coordinate precision.
+ *
+ * react-globe.gl pointRadius is in arc-degrees, so distances here are degrees.
+ */
+const BG_MARKER_RADIUS = 0.28; // must match radius in bgDcMarkers
+const GAP_FACTOR       = 1.5;  // 50 % clearance beyond the dot diameter
+
+const DC_VISUAL_POSITIONS: Map<string, { lat: number; lng: number }> = (() => {
+  const minDist = 2 * BG_MARKER_RADIUS * GAP_FACTOR; // minimum centre-to-centre distance
+  const n = ALL_DATA_CENTERS.length;
+
+  // Working copies — mutated in place during the simulation
+  const lats = ALL_DATA_CENTERS.map(d => d.lat);
+  const lngs = ALL_DATA_CENTERS.map(d => d.lng);
+
+  // Accumulator arrays reused each iteration (avoids allocating inside the loop)
+  const dLat = new Array<number>(n);
+  const dLng = new Array<number>(n);
+
+  const MAX_ITERS = 500;
+
+  for (let iter = 0; iter < MAX_ITERS; iter++) {
+    dLat.fill(0);
+    dLng.fill(0);
+    let anyOverlap = false;
+
+    for (let i = 0; i < n; i++) {
+      for (let j = i + 1; j < n; j++) {
+        const dlat = lats[i] - lats[j];
+        const dlng = lngs[i] - lngs[j];
+        const dist  = Math.sqrt(dlat * dlat + dlng * dlng);
+
+        if (dist < minDist) {
+          anyOverlap = true;
+          // Push each node half the overlap distance away from the other.
+          // When two nodes are exactly coincident (dist ≈ 0), default to
+          // pushing along the latitude axis so they don't stay stuck.
+          const push = (minDist - dist) / 2;
+          const ux   = dist > 1e-9 ? dlat / dist : 1.0;
+          const uy   = dist > 1e-9 ? dlng / dist : 0.0;
+
+          dLat[i] += ux * push;
+          dLng[i] += uy * push;
+          dLat[j] -= ux * push;
+          dLng[j] -= uy * push;
+        }
+      }
+    }
+
+    if (!anyOverlap) break; // fully separated — done
+
+    // Apply accumulated deltas in one batch (prevents order-dependent drift)
+    for (let i = 0; i < n; i++) {
+      lats[i] += dLat[i];
+      lngs[i] += dLng[i];
+    }
+  }
+
+  const result = new Map<string, { lat: number; lng: number }>();
+  ALL_DATA_CENTERS.forEach((dc, i) => result.set(dc.id, { lat: lats[i], lng: lngs[i] }));
+  return result;
+})();
+
 /** DC count per provider — used in the toggle badge. */
 const PROVIDER_COUNTS = ALL_PROVIDERS.reduce<Record<string, number>>((acc, p) => {
   acc[p] = ALL_DATA_CENTERS.filter((d) => d.provider === p).length;
@@ -390,16 +460,15 @@ export default function ChatPage() {
       const zoneData = d.zone ? carbonData[d.zone] : undefined;
       const grams = zoneData?.carbonIntensity ?? null;
       const dotColor = carbonMode ? carbonColor(grams) : d.color;
-      const carbonSuffix = carbonMode
-        ? ` · ${carbonLabel(grams)}`
-        : "";
+      const carbonSuffix = carbonMode ? ` · ${carbonLabel(grams)}` : "";
+      const visual = DC_VISUAL_POSITIONS.get(d.id) ?? { lat: d.lat, lng: d.lng };
       return {
         id: `bg-${d.id}`,
-        lat: d.lat,
-        lng: d.lng,
+        lat: visual.lat,
+        lng: visual.lng,
         color: dotColor,
         label: `${d.name} — ${d.provider}${d.region ? ` (${d.region})` : ""}${carbonSuffix}`,
-        radius: 0.28,
+        radius: BG_MARKER_RADIUS,
         altitude: 0.004,
         pulse: false,
       };
