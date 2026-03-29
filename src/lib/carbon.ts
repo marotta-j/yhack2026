@@ -9,6 +9,9 @@ export const MODEL_INTENSITY: Record<string, number> = {
   "grok-3-fast": 2.0,
   "claude-sonnet-4-6": 3.0,
   "claude-opus-4-6": 8.0,
+  // Search models — low compute; cost is dominated by the external API call, not inference
+  "serper-search": 0.3,
+  "exa-search": 0.5,
 };
 
 /**

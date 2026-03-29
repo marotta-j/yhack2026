@@ -102,11 +102,17 @@ export async function POST(req: Request) {
   // ── Route all subtasks ─────────────────────────────────────────────────────
   const routedSubtasks: RoutedSubtask[] = await Promise.all(
     subtasks.map(async (st: Subtask) => {
-      const model_id = selectModelForDifficulty(st.difficulty);
+      // SEARCH subtasks go directly to a search model; all others use difficulty routing
+      let model_id: string;
+      if (st.type === "SEARCH") {
+        model_id = st.search_type === "exa" ? "exa-search" : "serper-search";
+      } else {
+        model_id = selectModelForDifficulty(st.difficulty);
+      }
       const dc = resolveClosestDataCenter(model_id, userLat, userLng);
       const grid_carbon_intensity = await getGridCarbonIntensity(dc.lat, dc.lng);
       const eco_score = (MODEL_INTENSITY[model_id] ?? 1.0) * grid_carbon_intensity;
-      console.log(`[chat] Routed subtask: type=${st.type} difficulty=${st.difficulty} → model=${model_id} dc=${dc.id}`);
+      console.log(`[chat] Routed subtask: type=${st.type}${st.search_type ? `(${st.search_type})` : ""} difficulty=${st.difficulty} → model=${model_id} dc=${dc.id}`);
       return {
         ...st,
         model_id,

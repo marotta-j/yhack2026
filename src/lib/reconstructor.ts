@@ -21,9 +21,10 @@ export async function reconstructResponse(
   response: string;
   reconstructor_tokens: { prompt_tokens: number; completion_tokens: number };
 }> {
-  // Single subtask — no synthesis needed
-  if (subtaskResults.length === 1) {
-    console.log("[reconstructor] Single subtask, skipping synthesis");
+  // Single non-SEARCH subtask — return as-is (already a well-formed LLM response)
+  // SEARCH results must always go through synthesis: raw serper/exa output is not user-facing text
+  if (subtaskResults.length === 1 && subtaskResults[0].type !== "SEARCH") {
+    console.log("[reconstructor] Single non-SEARCH subtask, skipping synthesis");
     return {
       response: subtaskResults[0].response_text,
       reconstructor_tokens: { prompt_tokens: 0, completion_tokens: 0 },
