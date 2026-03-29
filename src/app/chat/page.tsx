@@ -36,9 +36,19 @@ import {
   resolveDataCenter,
   ALL_DATA_CENTERS,
   ALL_PROVIDERS,
+  ALL_ZONES,
   PROVIDER_COLORS,
   MODEL_PROVIDERS,
 } from "@/lib/datacenterLocations";
+import type { CarbonResponse } from "@/app/api/carbon/route";
+import {
+  carbonColor,
+  carbonLabel,
+  carbonTooltip,
+  carbonTierOf,
+  CARBON_TIERS,
+  CARBON_GRADIENT,
+} from "@/lib/carbonUtils";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -109,6 +119,11 @@ export default function ChatPage() {
     () => new Set(ALL_PROVIDERS),
   );
   const [togglePanelOpen, setTogglePanelOpen] = useState(true);
+
+  // Carbon intensity state
+  const [carbonData, setCarbonData] = useState<CarbonResponse>({});
+  const [carbonMode, setCarbonMode] = useState(false);
+  const [carbonLoading, setCarbonLoading] = useState(false);
 
   /** True geolocation from /api/geolocate (your IP). */
   const [realLocation, setRealLocation] = useState<ResolvedGeo | null>(null);
@@ -270,19 +285,38 @@ export default function ChatPage() {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, loading]);
 
-  // ── Background DC markers recomputed whenever the toggle changes ────────────
+  // ── Fetch carbon intensity for all known zones on mount ─────────────────────
+  useEffect(() => {
+    if (ALL_ZONES.length === 0) return;
+    setCarbonLoading(true);
+    fetch(`/api/carbon?zones=${ALL_ZONES.join(",")}`)
+      .then((r) => r.json())
+      .then((data: CarbonResponse) => setCarbonData(data))
+      .catch(() => {})
+      .finally(() => setCarbonLoading(false));
+  }, []);
+
+  // ── Background DC markers recomputed whenever the toggle or carbon mode changes
   const bgDcMarkers = useMemo<MarkerData[]>(() => {
-    return ALL_DATA_CENTERS.filter((d) => enabledProviders.has(d.provider)).map((d) => ({
-      id: `bg-${d.id}`,
-      lat: d.lat,
-      lng: d.lng,
-      color: d.color,
-      label: `${d.name} — ${d.provider}${d.region ? ` (${d.region})` : ""}`,
-      radius: 0.28,
-      altitude: 0.004,
-      pulse: false,
-    }));
-  }, [enabledProviders]);
+    return ALL_DATA_CENTERS.filter((d) => enabledProviders.has(d.provider)).map((d) => {
+      const entry   = d.zone ? carbonData[d.zone] : null;
+      const grams   = entry?.carbonIntensity ?? null;
+      const dotColor = carbonMode ? carbonColor(grams) : d.color;
+      const carbonSuffix = d.zone
+        ? ` · ${carbonLabel(grams)}`
+        : "";
+      return {
+        id: `bg-${d.id}`,
+        lat: d.lat,
+        lng: d.lng,
+        color: dotColor,
+        label: `${d.name} — ${d.provider}${d.region ? ` (${d.region})` : ""}${carbonSuffix}`,
+        radius: carbonMode ? 0.28 : 0.22,
+        altitude: 0.004,
+        pulse: false,
+      };
+    });
+  }, [enabledProviders, carbonMode, carbonData]);
 
   const allMarkers = useMemo<MarkerData[]>(
     () => [...bgDcMarkers, ...markers],
@@ -797,6 +831,53 @@ export default function ChatPage() {
           {togglePanelOpen && (
             <div className="mt-1 bg-black/70 backdrop-blur-sm rounded-xl overflow-hidden">
 
+              {/* ── Carbon mode toggle ──────────────────────────────────────── */}
+              <button
+                onClick={() => setCarbonMode((m) => !m)}
+                className={cn(
+                  "w-full flex items-center justify-between px-3 py-2 transition-all border-b border-white/10",
+                  carbonMode ? "bg-green-900/30 hover:bg-green-900/40" : "hover:bg-white/5",
+                )}
+              >
+                <div className="flex items-center gap-2">
+                  <span className="text-[11px] font-medium text-white">
+                    🌿 Carbon mode
+                  </span>
+                  {carbonLoading && (
+                    <span className="text-[10px] text-white/40 animate-pulse">loading…</span>
+                  )}
+                </div>
+                {/* Toggle pill */}
+                <div
+                  className={cn(
+                    "relative w-7 h-4 rounded-full transition-colors shrink-0",
+                    carbonMode ? "bg-green-500" : "bg-white/20",
+                  )}
+                >
+                  <div
+                    className={cn(
+                      "absolute top-0.5 w-3 h-3 rounded-full bg-white shadow transition-transform",
+                      carbonMode ? "translate-x-3.5" : "translate-x-0.5",
+                    )}
+                  />
+                </div>
+              </button>
+
+              {/* Carbon intensity gradient legend — shown when carbon mode is on */}
+              {carbonMode && (
+                <div className="px-3 py-2 border-b border-white/10">
+                  <div className="h-2 rounded-full w-full mb-1" style={{ background: CARBON_GRADIENT }} />
+                  <div className="flex justify-between text-[9px] text-white/40">
+                    {CARBON_TIERS.map((t) => (
+                      <span key={t.tier} style={{ color: t.color + "cc" }}>{t.label}</span>
+                    ))}
+                  </div>
+                  <p className="text-[9px] text-white/25 mt-1">
+                    Source: Electricity Maps · refreshed every 15 min
+                  </p>
+                </div>
+              )}
+
               {/* All / None shortcut */}
               <button
                 onClick={toggleAllProviders}
@@ -811,6 +892,16 @@ export default function ChatPage() {
               {ALL_PROVIDERS.map((provider) => {
                 const on = enabledProviders.has(provider);
                 const models = PROVIDER_MODELS[provider] ?? [];
+                // Average carbon intensity across DCs of this provider that have zone data
+                const providerDcs = ALL_DATA_CENTERS.filter((d) => d.provider === provider && d.zone);
+                const knownValues = providerDcs
+                  .map((d) => carbonData[d.zone!]?.carbonIntensity)
+                  .filter((v): v is number => v != null);
+                const avgCarbon = knownValues.length > 0
+                  ? knownValues.reduce((a, b) => a + b, 0) / knownValues.length
+                  : null;
+                const tier = carbonTierOf(avgCarbon);
+
                 return (
                   <button
                     key={provider}
@@ -822,19 +913,29 @@ export default function ChatPage() {
                   >
                     <span
                       className="w-2.5 h-2.5 rounded-full shrink-0 ring-1 ring-white/20"
-                      style={{ background: PROVIDER_COLORS[provider] }}
+                      style={{ background: carbonMode ? tier.color : PROVIDER_COLORS[provider] }}
                     />
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center justify-between gap-1">
                         <span className="text-xs text-white font-medium truncate">
                           {provider}
                         </span>
-                        <span
-                          className="text-[10px] shrink-0 tabular-nums"
-                          style={{ color: PROVIDER_COLORS[provider] + "bb" }}
-                        >
-                          {PROVIDER_COUNTS[provider]}
-                        </span>
+                        <div className="flex items-center gap-1 shrink-0">
+                          {carbonMode && avgCarbon != null && (
+                            <span
+                              className="text-[10px] tabular-nums font-mono"
+                              style={{ color: tier.color }}
+                            >
+                              {Math.round(avgCarbon)}g
+                            </span>
+                          )}
+                          <span
+                            className="text-[10px] tabular-nums"
+                            style={{ color: PROVIDER_COLORS[provider] + "bb" }}
+                          >
+                            {PROVIDER_COUNTS[provider]}
+                          </span>
+                        </div>
                       </div>
                       {models.length > 0 && (
                         <p className="text-[10px] text-white/35 truncate">
@@ -881,25 +982,43 @@ export default function ChatPage() {
         )}
 
         {/* ── Active routing legend ──────────────────────────────────────────── */}
-        {loading && activeDc && (
-          <div className="absolute bottom-4 left-80 flex gap-3 bg-black/60 backdrop-blur-sm rounded-full px-4 py-2 text-xs text-white pointer-events-none">
-            <span className="flex items-center gap-1.5">
-              <span
-                className="w-2 h-2 rounded-full animate-pulse"
-                style={{ background: activeDc.color }}
-              />
-              {isStreaming ? "Streaming from" : "Routing to"}{" "}
-              <span className="font-medium">{selectedModel}</span>
-              {" · "}
-              <span style={{ color: activeDc.color + "dd" }}>{activeDc.provider}</span>
-              {" · "}
-              {activeDc.name}
-              {activeDc.region && (
-                <span className="text-white/40"> ({activeDc.region})</span>
-              )}
-            </span>
-          </div>
-        )}
+        {loading && activeDc && (() => {
+          const activeGrams = activeDc.zone
+            ? (carbonData[activeDc.zone]?.carbonIntensity ?? null)
+            : null;
+          const activeTier = carbonTierOf(activeGrams);
+          return (
+            <div className="absolute bottom-4 left-1/2 -translate-x-1/2 flex gap-3 bg-black/60 backdrop-blur-sm rounded-full px-4 py-2 text-xs text-white pointer-events-none">
+              <span className="flex items-center gap-1.5">
+                <span
+                  className="w-2 h-2 rounded-full animate-pulse"
+                  style={{ background: activeDc.color }}
+                />
+                {isStreaming ? "Streaming from" : "Routing to"}{" "}
+                <span className="font-medium">{selectedModel}</span>
+                {" · "}
+                <span style={{ color: activeDc.color + "dd" }}>{activeDc.provider}</span>
+                {" · "}
+                {activeDc.name}
+                {activeDc.region && (
+                  <span className="text-white/40"> ({activeDc.region})</span>
+                )}
+                {activeGrams != null && (
+                  <>
+                    <span className="text-white/30 mx-0.5">·</span>
+                    <span
+                      className="font-mono font-medium"
+                      style={{ color: activeTier.color }}
+                      title={carbonTooltip(activeGrams)}
+                    >
+                      {Math.round(activeGrams)} g·CO₂/kWh
+                    </span>
+                  </>
+                )}
+              </span>
+            </div>
+          );
+        })()}
       </div>
     </div>
   );

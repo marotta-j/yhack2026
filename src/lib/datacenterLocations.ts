@@ -19,6 +19,8 @@ export interface DataCenter {
   region?: string;
   /** Resolved from PROVIDER_COLORS at build time. */
   color: string;
+  /** Electricity Maps zone code, e.g. "US-MIDA-PJM". Used for carbon-intensity lookups. */
+  zone?: string;
 }
 
 // ─── Provider brand colours ───────────────────────────────────────────────────
@@ -67,7 +69,7 @@ function dc(
 
 // ─── Full data-center registry ───────────────────────────────────────────────
 
-export const ALL_DATA_CENTERS: DataCenter[] = [
+const _RAW_DATA_CENTERS: DataCenter[] = [
 
   // ══ Google Cloud ═══════════════════════════════════════════════════════════
   dc('gcp-us-east1',          33.84,  -81.16, 'South Carolina',            'Google Cloud', 'us-east1'),
@@ -256,6 +258,196 @@ export const ALL_DATA_CENTERS: DataCenter[] = [
   // ══ xAI ════════════════════════════════════════════════════════════════════
   //  xAI's Colossus supercomputer cluster is in Memphis, TN.
   dc('xai-memphis',           35.15,  -90.05, 'Memphis, TN (Colossus)',    'xAI', 'US-MEM'),
+];
+
+// ─── Electricity Maps zone codes per DC id ────────────────────────────────────
+//  Source: https://www.electricitymaps.com / verified against the live API.
+//  Zones with no coverage are omitted (zone field will be undefined).
+
+export const DC_ZONE_MAP: Record<string, string> = {
+  // ── Google Cloud ──────────────────────────────────────────────────────────
+  'gcp-us-east1':          'US-SE-SEPA',
+  'gcp-us-east4':          'US-MIDA-PJM',
+  'gcp-us-east5':          'US-MIDA-PJM',
+  'gcp-us-central1':       'US-MIDW-MISO',
+  'gcp-us-west1':          'US-NW-PACW',
+  'gcp-us-west2':          'US-CAL-CISO',
+  'gcp-us-west3':          'US-NW-PACW',
+  'gcp-us-west4':          'US-NW-NEVP',
+  'gcp-us-south1':         'US-TEX-ERCO',
+  'gcp-na-ne1':            'CA-QC',
+  'gcp-na-ne2':            'CA-ON',
+  'gcp-sa-east1':          'BR-CS',
+  'gcp-eu-west1':          'BE',
+  'gcp-eu-west2':          'GB',
+  'gcp-eu-west3':          'FR',
+  'gcp-eu-west4':          'NL',
+  'gcp-eu-west6':          'CH',
+  'gcp-eu-west8':          'IT-NO',
+  'gcp-eu-west10':         'DE',
+  'gcp-eu-west12':         'IT-NO',
+  'gcp-eu-north1':         'FI',
+  'gcp-eu-central2':       'PL',
+  'gcp-eu-southwest1':     'ES',
+  'gcp-me-west1':          'IL',
+  'gcp-me-central2':       'AE',
+  'gcp-af-south1':         'ZA',
+  'gcp-as-south1':         'IN-WE',
+  'gcp-as-south2':         'IN-NO',
+  'gcp-as-se1':            'SG',
+  'gcp-as-se2':            'ID',
+  'gcp-as-east1':          'TW',
+  'gcp-as-east2':          'HK',
+  'gcp-as-ne1':            'JP-TK',
+  'gcp-as-ne2':            'JP-KY',
+  'gcp-as-ne3':            'KR',
+  'gcp-au-se1':            'AU-NSW',
+  'gcp-au-se2':            'AU-VIC',
+  // ── AWS ───────────────────────────────────────────────────────────────────
+  'aws-us-east-1':         'US-MIDA-PJM',
+  'aws-us-east-2':         'US-MIDA-PJM',
+  'aws-us-west-1':         'US-CAL-CISO',
+  'aws-us-west-2':         'US-NW-PACW',
+  'aws-ca-central-1':      'CA-QC',
+  'aws-ca-west-1':         'CA-AB',
+  'aws-eu-west-1':         'IE',
+  'aws-eu-west-2':         'GB',
+  'aws-eu-west-3':         'FR',
+  'aws-eu-central-1':      'DE',
+  'aws-eu-central-2':      'CH',
+  'aws-eu-north-1':        'SE',
+  'aws-eu-south-1':        'IT-NO',
+  'aws-eu-south-2':        'ES',
+  'aws-ap-southeast-1':    'SG',
+  'aws-ap-southeast-2':    'AU-NSW',
+  'aws-ap-southeast-3':    'ID',
+  'aws-ap-southeast-4':    'AU-VIC',
+  'aws-ap-northeast-1':    'JP-TK',
+  'aws-ap-northeast-2':    'KR',
+  'aws-ap-northeast-3':    'JP-KY',
+  'aws-ap-south-1':        'IN-WE',
+  'aws-ap-south-2':        'IN-SO',
+  'aws-ap-east-1':         'HK',
+  'aws-sa-east-1':         'BR-CS',
+  'aws-me-south-1':        'BH',
+  'aws-me-central-1':      'AE',
+  'aws-af-south-1':        'ZA',
+  'aws-il-central-1':      'IL',
+  // ── Azure ─────────────────────────────────────────────────────────────────
+  'az-eastus':             'US-MIDA-PJM',
+  'az-eastus2':            'US-MIDA-PJM',
+  'az-westus':             'US-CAL-CISO',
+  'az-westus2':            'US-NW-PACW',
+  'az-westus3':            'US-NW-NEVP',
+  'az-centralus':          'US-MIDW-MISO',
+  'az-northcentralus':     'US-MIDW-MISO',
+  'az-southcentralus':     'US-TEX-ERCO',
+  'az-westcentralus':      'US-NW-PACW',
+  'az-canadacentral':      'CA-ON',
+  'az-canadaeast':         'CA-QC',
+  'az-brazilsouth':        'BR-CS',
+  'az-brazilsoutheast':    'BR-CS',
+  'az-uksouth':            'GB',
+  'az-ukwest':             'GB',
+  'az-northeurope':        'IE',
+  'az-westeurope':         'NL',
+  'az-francecentral':      'FR',
+  'az-francesouth':        'FR',
+  'az-germanywestcentral': 'DE',
+  'az-germanynorth':       'DE',
+  'az-switzerlandnorth':   'CH',
+  'az-switzerlandwest':    'CH',
+  'az-norwayeast':         'NO',
+  'az-norwaywest':         'NO',
+  'az-swedencentral':      'SE',
+  'az-polandcentral':      'PL',
+  'az-italynorth':         'IT-NO',
+  'az-spaincentral':       'ES',
+  'az-eastasia':           'HK',
+  'az-southeastasia':      'SG',
+  'az-australiaeast':      'AU-NSW',
+  'az-australiasoutheast': 'AU-VIC',
+  'az-australiacentral':   'AU-NSW',
+  'az-japaneast':          'JP-TK',
+  'az-japanwest':          'JP-KY',
+  'az-koreacentral':       'KR',
+  'az-koreasouth':         'KR',
+  'az-centralindia':       'IN-WE',
+  'az-southindia':         'IN-SO',
+  'az-westindia':          'IN-WE',
+  'az-uaenorth':           'AE',
+  'az-uaecentral':         'AE',
+  'az-israelcentral':      'IL',
+  'az-southafricanorth':   'ZA',
+  'az-southafricawest':    'ZA',
+  // ── Oracle ────────────────────────────────────────────────────────────────
+  'oci-us-ashburn':        'US-MIDA-PJM',
+  'oci-us-phoenix':        'US-NW-NEVP',
+  'oci-us-chicago':        'US-MIDW-MISO',
+  'oci-us-sanjose':        'US-CAL-CISO',
+  'oci-ca-toronto':        'CA-ON',
+  'oci-ca-montreal':       'CA-QC',
+  'oci-eu-amsterdam':      'NL',
+  'oci-eu-frankfurt':      'DE',
+  'oci-eu-london':         'GB',
+  'oci-eu-milan':          'IT-NO',
+  'oci-eu-paris':          'FR',
+  'oci-eu-stockholm':      'SE',
+  'oci-eu-zurich':         'CH',
+  'oci-eu-madrid':         'ES',
+  'oci-eu-marseille':      'FR',
+  'oci-ap-sydney':         'AU-NSW',
+  'oci-ap-melbourne':      'AU-VIC',
+  'oci-ap-tokyo':          'JP-TK',
+  'oci-ap-osaka':          'JP-KY',
+  'oci-ap-seoul':          'KR',
+  'oci-ap-chuncheon':      'KR',
+  'oci-ap-mumbai':         'IN-WE',
+  'oci-ap-hyderabad':      'IN-SO',
+  'oci-ap-singapore':      'SG',
+  'oci-ap-auckland':       'AU-NSW',
+  'oci-me-dubai':          'AE',
+  'oci-me-abudhabi':       'AE',
+  'oci-me-riyadh':         'SA',
+  'oci-il-jerusalem':      'IL',
+  'oci-af-johannesburg':   'ZA',
+  'oci-sa-saopaulo':       'BR-CS',
+  'oci-sa-vinhedo':        'BR-CS',
+  // ── SoftBank ─────────────────────────────────────────────────────────────
+  'sb-tokyo1':             'JP-TK',
+  'sb-tokyo2':             'JP-TK',
+  'sb-osaka':              'JP-KY',
+  'sb-fukuoka':            'JP-KY',
+  'sb-nagoya':             'JP-TK',
+  'sb-sapporo':            'JP-TK',
+  'sb-dallas':             'US-TEX-ERCO',
+  'sb-london':             'GB',
+  'sb-singapore':          'SG',
+  // ── Nvidia ────────────────────────────────────────────────────────────────
+  'nv-santaclara':         'US-CAL-CISO',
+  'nv-eastus':             'US-MIDA-PJM',
+  'nv-centralus':          'US-MIDW-MISO',
+  'nv-phoenix':            'US-NW-NEVP',
+  'nv-texas':              'US-TEX-ERCO',
+  'nv-frankfurt':          'DE',
+  'nv-netherlands':        'NL',
+  'nv-tokyo':              'JP-TK',
+  'nv-singapore':          'SG',
+  // ── xAI ──────────────────────────────────────────────────────────────────
+  'xai-memphis':           'US-TEN-TVA',
+};
+
+/** ALL_DATA_CENTERS enriched with Electricity Maps zone codes. */
+export const ALL_DATA_CENTERS: DataCenter[] = _RAW_DATA_CENTERS.map((d) => ({
+  ...d,
+  zone: DC_ZONE_MAP[d.id] ?? d.zone,
+}));
+
+/** All unique Electricity Maps zone codes referenced by ANY data center. */
+export const ALL_ZONES: string[] = [
+  ...new Set(
+    Object.values(DC_ZONE_MAP).filter(Boolean),
+  ),
 ];
 
 // ─── Haversine distance (km) ─────────────────────────────────────────────────
