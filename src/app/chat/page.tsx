@@ -19,6 +19,7 @@ import {
   LayersIcon,
   ChevronDownIcon,
   ChevronUpIcon,
+  TrashIcon,
 } from "lucide-react";
 import Link from "next/link";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -37,9 +38,18 @@ import {
   resolveDataCenter,
   ALL_DATA_CENTERS,
   ALL_PROVIDERS,
+  ALL_ZONES,
   PROVIDER_COLORS,
   MODEL_PROVIDERS,
 } from "@/lib/datacenterLocations";
+import {
+  carbonColor,
+  carbonLabel,
+  carbonTierOf,
+  CARBON_TIERS,
+  CARBON_GRADIENT,
+} from "@/lib/carbonUtils";
+import type { CarbonResponse } from "@/app/api/carbon/route";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -103,6 +113,11 @@ export default function ChatPage() {
   const bottomRef = useRef<HTMLDivElement>(null);
   const isStreamingRef = useRef(false);
 
+  // Per-conversation globe snapshots (static arcs + active DC markers)
+  const convGlobeRef = useRef<Record<string, { arcs: ArcData[]; dcMarkers: MarkerData[] }>>({});
+  const prevActiveIdRef = useRef<string | null>(null);
+  // Tracks which conversation ID is currently being streamed (may differ from activeId)
+  const streamingConvIdRef = useRef<string | null>(null);
   // Subtask confirmation state
   const [confirming, setConfirming] = useState(false);
   const [pendingExecution, setPendingExecution] = useState<{
@@ -126,6 +141,11 @@ export default function ChatPage() {
     () => new Set(ALL_PROVIDERS),
   );
   const [togglePanelOpen, setTogglePanelOpen] = useState(true);
+
+  // Carbon intensity
+  const [carbonData, setCarbonData] = useState<CarbonResponse>({});
+  const [carbonMode, setCarbonMode] = useState(false);
+  const [carbonLoading, setCarbonLoading] = useState(false);
 
   /** True geolocation from /api/geolocate (your IP). */
   const [realLocation, setRealLocation] = useState<ResolvedGeo | null>(null);
@@ -157,6 +177,17 @@ export default function ChatPage() {
         });
       })
       .catch(() => {});
+  }, []);
+
+  // ── Fetch carbon intensity data for all known zones ─────────────────────
+  useEffect(() => {
+    if (ALL_ZONES.length === 0) return;
+    setCarbonLoading(true);
+    fetch(`/api/carbon?zones=${ALL_ZONES.join(",")}`)
+      .then((r) => r.json())
+      .then((data: CarbonResponse) => setCarbonData(data))
+      .catch(() => {})
+      .finally(() => setCarbonLoading(false));
   }, []);
 
   // ── Sync effective position: override ?? real ─────────────────────────────
@@ -199,6 +230,57 @@ export default function ChatPage() {
     setLocationOverride(null);
   }
 
+  // ── Save/restore per-conversation globe state when active conversation changes ─
+  useEffect(() => {
+    // Snapshot the outgoing conversation's globe state (arcs/markers captured at
+    // the moment activeId changes, before any clearing happens)
+    const leavingId = prevActiveIdRef.current;
+    if (leavingId) {
+      convGlobeRef.current[leavingId] = {
+        arcs: arcs.filter((a) => a.static),
+        dcMarkers: markers.filter((m) => m.id.startsWith("dc-")),
+      };
+    }
+    prevActiveIdRef.current = activeId;
+
+    if (!activeId) {
+      setArcs([]);
+      setMarkers((prev) => prev.filter((m) => m.id === "user"));
+      return;
+    }
+
+    // Don't restore globe state mid-stream — the in-flight arcs are already correct
+    if (isStreamingRef.current) return;
+
+    const saved = convGlobeRef.current[activeId];
+    if (saved) {
+      // Already cached in this session — restore immediately
+      setArcs(saved.arcs);
+      setMarkers((prev) => {
+        const userMarker = prev.find((m) => m.id === "user");
+        return userMarker ? [...saved.dcMarkers, userMarker] : [...saved.dcMarkers];
+      });
+    } else {
+      // Not in memory (page refresh) — load from DB
+      let cancelled = false;
+      fetch(`/api/conversations/${activeId}`)
+        .then((r) => r.json())
+        .then((conv) => {
+          if (cancelled) return;
+          const state: { arcs: ArcData[]; dcMarkers: MarkerData[] } =
+            conv.globeState ?? { arcs: [], dcMarkers: [] };
+          convGlobeRef.current[activeId] = state;
+          setArcs(state.arcs);
+          setMarkers((prev) => {
+            const userMarker = prev.find((m) => m.id === "user");
+            return userMarker ? [...state.dcMarkers, userMarker] : [...state.dcMarkers];
+          });
+        })
+        .catch(() => {});
+      return () => { cancelled = true; };
+    }
+  }, [activeId]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // ── Load messages when active conversation changes ──────────────────────────
   useEffect(() => {
     if (!activeId) {
@@ -213,24 +295,50 @@ export default function ChatPage() {
       .finally(() => setLoadingMessages(false));
   }, [activeId]);
 
+  // ── Persist globe state to DB after each message completes ─────────────────
+  // Runs when `loading` transitions false → captures the arcs/markers from that
+  // render (which already include the new static arc added during the "done" event).
+  useEffect(() => {
+    if (loading) return;
+    const convId = streamingConvIdRef.current;
+    if (!convId) return;
+    const staticArcs = arcs.filter((a) => a.static);
+    const dcMarkers = markers.filter((m) => m.id.startsWith("dc-"));
+    const state = { arcs: staticArcs, dcMarkers };
+    convGlobeRef.current[convId] = state; // keep in-memory cache in sync
+    fetch(`/api/conversations/${convId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ globeState: state }),
+    }).catch(() => {});
+  }, [loading]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // ── Scroll to bottom on new messages ───────────────────────────────────────
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, loading]);
 
-  // ── Background DC markers recomputed whenever the toggle changes ────────────
+  // ── Background DC markers recomputed whenever the toggle or carbon mode changes ─
   const bgDcMarkers = useMemo<MarkerData[]>(() => {
-    return ALL_DATA_CENTERS.filter((d) => enabledProviders.has(d.provider)).map((d) => ({
-      id: `bg-${d.id}`,
-      lat: d.lat,
-      lng: d.lng,
-      color: d.color,
-      label: `${d.name} — ${d.provider}${d.region ? ` (${d.region})` : ""}`,
-      radius: 0.22,
-      altitude: 0.004,
-      pulse: false,
-    }));
-  }, [enabledProviders]);
+    return ALL_DATA_CENTERS.filter((d) => enabledProviders.has(d.provider)).map((d) => {
+      const zoneData = d.zone ? carbonData[d.zone] : undefined;
+      const grams = zoneData?.carbonIntensity ?? null;
+      const dotColor = carbonMode ? carbonColor(grams) : d.color;
+      const carbonSuffix = carbonMode
+        ? ` · ${carbonLabel(grams)}`
+        : "";
+      return {
+        id: `bg-${d.id}`,
+        lat: d.lat,
+        lng: d.lng,
+        color: dotColor,
+        label: `${d.name} — ${d.provider}${d.region ? ` (${d.region})` : ""}${carbonSuffix}`,
+        radius: 0.28,
+        altitude: 0.004,
+        pulse: false,
+      };
+    });
+  }, [enabledProviders, carbonMode, carbonData]);
 
   const allMarkers = useMemo<MarkerData[]>(
     () => [...bgDcMarkers, ...markers],
@@ -243,6 +351,17 @@ export default function ChatPage() {
     const res = await fetch("/api/conversations");
     const data = await res.json();
     setConversations(data);
+  }
+
+  async function deleteConversation(id: string, e: React.MouseEvent) {
+    e.stopPropagation();
+    await fetch(`/api/conversations/${id}`, { method: "DELETE" });
+    delete convGlobeRef.current[id];
+    setConversations((prev) => prev.filter((c) => c._id !== id));
+    if (activeId === id) {
+      setActiveId(null);
+      setMessages([]);
+    }
   }
 
   async function handleNewChat() {
@@ -391,6 +510,8 @@ export default function ChatPage() {
             // ── model event ──────────────────────────────────────────────
             if (event.type === "model") {
               setSelectedModel(event.model);
+              streamingConvIdRef.current = event.conversationId;
+              if (!activeId) setActiveId(event.conversationId);
               setMessages((prev) => [
                 ...prev,
                 {
@@ -579,25 +700,37 @@ export default function ChatPage() {
         <div className="flex-1 min-h-0 overflow-y-auto px-2">
           <div className="space-y-1 pb-2">
             {conversations.map((conv) => (
-              <button
+              <div
                 key={conv._id}
                 onClick={() => { setConfirming(false); setPendingExecution(null); setActiveId(conv._id); }}
                 className={cn(
-                  "w-full text-left px-3 py-2 rounded-md text-sm transition-colors",
+                  "group relative flex items-center rounded-md text-sm transition-colors",
                   "hover:bg-accent hover:text-accent-foreground",
                   activeId === conv._id
                     ? "bg-accent text-accent-foreground"
                     : "text-muted-foreground",
                 )}
               >
-                <div className="flex items-center gap-2">
-                  <MessageSquareIcon className="w-3.5 h-3.5 shrink-0" />
-                  <span className="truncate">{conv.title}</span>
-                </div>
-                <p className="text-xs text-muted-foreground mt-0.5 pl-5">
-                  {conv.messageCount} messages
-                </p>
-              </button>
+                <button
+                  onClick={() => setActiveId(conv._id)}
+                  className="flex-1 text-left px-3 py-2 min-w-0"
+                >
+                  <div className="flex items-center gap-2">
+                    <MessageSquareIcon className="w-3.5 h-3.5 shrink-0" />
+                    <span className="truncate">{conv.title}</span>
+                  </div>
+                  <p className="text-xs text-muted-foreground mt-0.5 pl-5">
+                    {conv.messageCount} messages
+                  </p>
+                </button>
+                <button
+                  onClick={(e) => deleteConversation(conv._id, e)}
+                  className="shrink-0 p-1.5 mr-1 rounded opacity-0 group-hover:opacity-100 hover:text-destructive transition-opacity"
+                  aria-label="Delete conversation"
+                >
+                  <TrashIcon className="w-3.5 h-3.5" />
+                </button>
+              </div>
             ))}
           </div>
         </div>
@@ -853,13 +986,14 @@ export default function ChatPage() {
 
       {/* ── Globe panel ──────────────────────────────────────────────────────── */}
       <div className="flex-1 bg-black relative overflow-hidden">
-        <GlobeView arcs={arcs} markers={allMarkers} autoRotate />
+        <GlobeView arcs={arcs} markers={allMarkers} autoRotate initialPointOfView={userLocation ?? undefined} />
 
-        {/* ── Provider toggle panel ───────────────────────────────────────── */}
-        <div className="absolute top-4 right-4 z-10 w-52">
+        {/* ── Provider toggle panel (high z: above globe CSS2D labels / canvas) ─ */}
+        <div className="absolute top-4 right-4 z-[1000] w-52 pointer-events-auto">
 
           {/* Header / collapse button */}
           <button
+            type="button"
             onClick={() => setTogglePanelOpen((o) => !o)}
             className="w-full flex items-center justify-between gap-2 bg-black/70 backdrop-blur-sm rounded-xl px-3 py-2 text-white hover:bg-black/80 transition-colors"
           >
@@ -880,6 +1014,41 @@ export default function ChatPage() {
           {togglePanelOpen && (
             <div className="mt-1 bg-black/70 backdrop-blur-sm rounded-xl overflow-hidden">
 
+              {/* Carbon mode toggle */}
+              <div className="px-3 py-2 border-b border-white/10 flex items-center justify-between gap-2">
+                <div className="flex flex-col min-w-0">
+                  <span className="text-[10px] text-white/70 font-medium">Carbon mode</span>
+                  {carbonMode && (
+                    <div
+                      className="mt-0.5 h-1 rounded-full w-full"
+                      style={{ background: CARBON_GRADIENT }}
+                    />
+                  )}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setCarbonMode((m) => !m)}
+                  className={cn(
+                    "relative shrink-0 w-8 h-4 rounded-full transition-colors",
+                    carbonMode ? "bg-emerald-500" : "bg-white/20",
+                  )}
+                  aria-label="Toggle carbon intensity mode"
+                  aria-pressed={carbonMode}
+                >
+                  {carbonLoading && carbonMode && (
+                    <span className="pointer-events-none absolute inset-0 flex items-center justify-center">
+                      <span className="w-2 h-2 rounded-full bg-white/60 animate-pulse" />
+                    </span>
+                  )}
+                  <span
+                    className={cn(
+                      "pointer-events-none absolute left-0.5 top-0.5 w-3 h-3 rounded-full bg-white shadow transition-transform",
+                      carbonMode ? "translate-x-4" : "translate-x-0",
+                    )}
+                  />
+                </button>
+              </div>
+
               {/* All / None shortcut */}
               <button
                 onClick={toggleAllProviders}
@@ -894,6 +1063,17 @@ export default function ChatPage() {
               {ALL_PROVIDERS.map((provider) => {
                 const on = enabledProviders.has(provider);
                 const models = PROVIDER_MODELS[provider] ?? [];
+
+                // Average carbon intensity across DCs of this provider
+                const providerDcs = ALL_DATA_CENTERS.filter((d) => d.provider === provider);
+                const carbonValues = providerDcs
+                  .map((d) => (d.zone ? carbonData[d.zone]?.carbonIntensity : undefined))
+                  .filter((v): v is number => v != null);
+                const avgCarbon = carbonValues.length > 0
+                  ? carbonValues.reduce((s, v) => s + v, 0) / carbonValues.length
+                  : null;
+                const tier = carbonTierOf(avgCarbon);
+
                 return (
                   <button
                     key={provider}
@@ -905,19 +1085,34 @@ export default function ChatPage() {
                   >
                     <span
                       className="w-2.5 h-2.5 rounded-full shrink-0 ring-1 ring-white/20"
-                      style={{ background: PROVIDER_COLORS[provider] }}
+                      style={{ background: carbonMode ? tier.color : PROVIDER_COLORS[provider] }}
                     />
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center justify-between gap-1">
                         <span className="text-xs text-white font-medium truncate">
                           {provider}
                         </span>
-                        <span
-                          className="text-[10px] shrink-0 tabular-nums"
-                          style={{ color: PROVIDER_COLORS[provider] + "bb" }}
-                        >
-                          {PROVIDER_COUNTS[provider]}
-                        </span>
+                        {carbonMode ? (
+                          avgCarbon != null ? (
+                            <span
+                              className="text-[10px] shrink-0 tabular-nums font-medium"
+                              style={{ color: tier.color }}
+                            >
+                              {Math.round(avgCarbon)}g
+                            </span>
+                          ) : (
+                            <span className="text-[10px] shrink-0 tabular-nums text-white/40">
+                              —
+                            </span>
+                          )
+                        ) : (
+                          <span
+                            className="text-[10px] shrink-0 tabular-nums"
+                            style={{ color: PROVIDER_COLORS[provider] + "bb" }}
+                          >
+                            {PROVIDER_COUNTS[provider]}
+                          </span>
+                        )}
                       </div>
                       {models.length > 0 && (
                         <p className="text-[10px] text-white/35 truncate">
@@ -964,25 +1159,38 @@ export default function ChatPage() {
         )}
 
         {/* ── Active routing legend ──────────────────────────────────────────── */}
-        {loading && activeDc && (
-          <div className="absolute bottom-4 left-1/2 -translate-x-1/2 flex gap-3 bg-black/60 backdrop-blur-sm rounded-full px-4 py-2 text-xs text-white pointer-events-none">
-            <span className="flex items-center gap-1.5">
-              <span
-                className="w-2 h-2 rounded-full animate-pulse"
-                style={{ background: activeDc.color }}
-              />
-              {isStreaming ? "Streaming from" : "Routing to"}{" "}
-              <span className="font-medium">{selectedModel}</span>
-              {" · "}
-              <span style={{ color: activeDc.color + "dd" }}>{activeDc.provider}</span>
-              {" · "}
-              {activeDc.name}
-              {activeDc.region && (
-                <span className="text-white/40"> ({activeDc.region})</span>
-              )}
-            </span>
-          </div>
-        )}
+        {loading && activeDc && (() => {
+          const activeZoneData = activeDc.zone ? carbonData[activeDc.zone] : undefined;
+          const activeGrams = activeZoneData?.carbonIntensity ?? null;
+          const activeTier = carbonTierOf(activeGrams);
+          return (
+            <div className="absolute bottom-4 left-1/2 -translate-x-1/2 flex gap-3 bg-black/60 backdrop-blur-sm rounded-full px-4 py-2 text-xs text-white pointer-events-none whitespace-nowrap">
+              <span className="flex items-center gap-1.5">
+                <span
+                  className="w-2 h-2 rounded-full animate-pulse"
+                  style={{ background: activeDc.color }}
+                />
+                {isStreaming ? "Streaming from" : "Routing to"}{" "}
+                <span className="font-medium">{selectedModel}</span>
+                {" · "}
+                <span style={{ color: activeDc.color + "dd" }}>{activeDc.provider}</span>
+                {" · "}
+                {activeDc.name}
+                {activeDc.region && (
+                  <span className="text-white/40"> ({activeDc.region})</span>
+                )}
+                {carbonMode && activeGrams != null && (
+                  <>
+                    {" · "}
+                    <span style={{ color: activeTier.color }}>
+                      {Math.round(activeGrams)} g·CO₂/kWh
+                    </span>
+                  </>
+                )}
+              </span>
+            </div>
+          );
+        })()}
       </div>
     </div>
   );
