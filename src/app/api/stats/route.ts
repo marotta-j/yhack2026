@@ -5,6 +5,7 @@ import { authOptions } from "@/lib/auth";
 import { connectToDatabase } from "@/lib/mongodb";
 import Message from "@/models/Message";
 import SubtaskDocumentModel from "@/models/SubtaskDocument";
+import UserStats from "@/models/UserStats";
 
 export async function GET() {
   const session = await getServerSession(authOptions);
@@ -15,23 +16,11 @@ export async function GET() {
   await connectToDatabase();
   const userId = new Types.ObjectId(session.user.id);
 
-  const [carbonAgg, subtasks, dailyRaw] = await Promise.all([
-    // Total carbon used + saved across all assistant messages
-    Message.aggregate([
-      { $match: { userId, role: "assistant" } },
-      {
-        $group: {
-          _id: null,
-          totalMessages: { $sum: 1 },
-          totalCarbonCost: { $sum: "$carbonCost" },
-          totalCarbonSaved: { $sum: "$carbonDelta" },
-          totalNaiveBaseline: { $sum: "$naiveBaseline" },
-          totalTokens: { $sum: "$totalTokens" },
-        },
-      },
-    ]),
+  const [lifetimeStats, subtasks, dailyRaw] = await Promise.all([
+    // Lifetime totals from UserStats — these persist even after conversations are deleted
+    UserStats.findOne({ userId }),
 
-    // Subtask counts by model and by type
+    // Subtask counts by model and by type — SubtaskDocuments are never deleted
     SubtaskDocumentModel.aggregate([
       { $match: { userId } },
       {
@@ -48,7 +37,7 @@ export async function GET() {
       },
     ]),
 
-    // Carbon saved per day (last 30 days)
+    // Carbon saved per day (last 30 days) — from remaining messages
     Message.aggregate([
       {
         $match: {
@@ -68,12 +57,12 @@ export async function GET() {
     ]),
   ]);
 
-  const totals = carbonAgg[0] ?? {
-    totalMessages: 0,
-    totalCarbonCost: 0,
-    totalCarbonSaved: 0,
-    totalNaiveBaseline: 0,
-    totalTokens: 0,
+  const totals = {
+    totalMessages:      lifetimeStats?.totalMessages      ?? 0,
+    totalTokens:        lifetimeStats?.totalTokens        ?? 0,
+    totalCarbonCost:    lifetimeStats?.totalCarbonCost    ?? 0,
+    totalCarbonSaved:   lifetimeStats?.totalCarbonSaved   ?? 0,
+    totalNaiveBaseline: lifetimeStats?.totalNaiveBaseline ?? 0,
   };
 
   return NextResponse.json({
