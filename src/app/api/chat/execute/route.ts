@@ -181,6 +181,7 @@ export async function POST(req: Request) {
     decomposer_tokens,
     was_decomposed,
     difficulty_scorer_tokens = { prompt_tokens: 0, completion_tokens: 0 },
+    difficulty_prompt_carbon = 0,
   }: {
     selectedSubtasks: RoutedSubtask[];
     originalMessage: string;
@@ -190,6 +191,7 @@ export async function POST(req: Request) {
     decomposer_tokens: { prompt_tokens: number; completion_tokens: number };
     was_decomposed: boolean;
     difficulty_scorer_tokens: { prompt_tokens: number; completion_tokens: number };
+    difficulty_prompt_carbon: number;
   } = await req.json();
 
   await connectToDatabase();
@@ -462,6 +464,16 @@ export async function POST(req: Request) {
 
         const orchDc = resolveClosestDataCenter("gemini-2.0-flash", userLat, userLng);
         const orchGridCarbon = await getGridCarbonIntensity(orchDc.lat, orchDc.lng, orchDc.zone);
+        const decompositionCarbon = calculateSubtaskCarbon(
+          decomposer_tokens.prompt_tokens + decomposer_tokens.completion_tokens,
+          "gemini-2.0-flash",
+          orchGridCarbon,
+        );
+        const reconstructionCarbon = calculateSubtaskCarbon(
+          reconstructor_tokens.prompt_tokens + reconstructor_tokens.completion_tokens,
+          "gemini-2.0-flash",
+          orchGridCarbon,
+        );
         const naiveBaseline = await calculateNaiveBaseline(
           difficulty_scorer_tokens.prompt_tokens,     // user input ≈ scorer's prompt (includes user message)
           reconstructor_tokens.completion_tokens,     // final output tokens (reconstructed response length)
@@ -543,6 +555,11 @@ export async function POST(req: Request) {
             carbon_report: carbonReport,
             was_decomposed,
             subtask_count: allResults.length,
+            orchestration_carbon: {
+              difficulty: difficulty_prompt_carbon,
+              decomposition: decompositionCarbon,
+              reconstruction: reconstructionCarbon,
+            },
           }) + "\n"),
         );
         console.log("[execute/stream] Emitted done (multi path)");

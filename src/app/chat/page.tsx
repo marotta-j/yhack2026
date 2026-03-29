@@ -76,6 +76,7 @@ interface SubtaskPanelSnapshot {
   subtasks: RoutedSubtask[];
   subtaskResults: (SubtaskMeta | undefined)[];
   difficultyScore: number;
+  orchestrationCarbon?: { difficulty?: number; decomposition?: number; reconstruction?: number };
 }
 
 interface Message {
@@ -101,7 +102,6 @@ interface Message {
   subtask_count?: number;
   subtask_results?: SubtaskMeta[];
   searchProviders?: string[];
-  subtaskPanelSnapshot?: SubtaskPanelSnapshot;
 }
 
 interface Conversation {
@@ -235,6 +235,7 @@ export default function ChatPage() {
     conversationId: string;
     decomposer_tokens: { prompt_tokens: number; completion_tokens: number };
     difficulty_scorer_tokens: { prompt_tokens: number; completion_tokens: number };
+    difficulty_prompt_carbon: number;
     was_decomposed: boolean;
     originalMessage: string;
   } | null>(null);
@@ -242,6 +243,8 @@ export default function ChatPage() {
   const [expandedSubtasks, setExpandedSubtasks] = useState<Set<number>>(new Set());
   // Track which completed message panels are expanded (collapsed by default after streaming)
   const [expandedPanels, setExpandedPanels] = useState<Set<string>>(new Set());
+  // Snapshots keyed by assistant message _id — persists independently of messages reload
+  const [subtaskSnapshots, setSubtaskSnapshots] = useState<Map<string, SubtaskPanelSnapshot>>(new Map());
   // Per-subtask states for the inline SubtaskPanel
   const [subtaskStates, setSubtaskStates] = useState<SubtaskState[]>([]);
   const [subtaskResults, setSubtaskResults] = useState<(SubtaskMeta | undefined)[]>([]);
@@ -631,12 +634,12 @@ export default function ChatPage() {
         isStreamingRef.current = false;
         setLoading(false);
         setActiveDifficultyScore(difficultyScore ?? 0);
-        setPendingExecution({ subtasks, conversationId, decomposer_tokens, difficulty_scorer_tokens: { prompt_tokens: difficulty_prompt_tokens ?? 0, completion_tokens: 0 }, was_decomposed, originalMessage: text });
+        setPendingExecution({ subtasks, conversationId, decomposer_tokens, difficulty_scorer_tokens: { prompt_tokens: difficulty_prompt_tokens ?? 0, completion_tokens: 0 }, difficulty_prompt_carbon: difficulty_prompt_carbon ?? 0, was_decomposed, originalMessage: text });
         setSelectedSubtaskIndices(new Set(subtasks.map((_: RoutedSubtask, i: number) => i)));
         setConfirming(true);
       } else {
         // Single subtask — skip confirmation, fire Phase 2 immediately
-        await executeSubtasks(subtasks, conversationId, decomposer_tokens, { prompt_tokens: difficulty_prompt_tokens ?? 0, completion_tokens: 0 }, was_decomposed, text, difficultyScore ?? 0);
+        await executeSubtasks(subtasks, conversationId, decomposer_tokens, { prompt_tokens: difficulty_prompt_tokens ?? 0, completion_tokens: 0 }, difficulty_prompt_carbon ?? 0, was_decomposed, text, difficultyScore ?? 0);
       }
     } catch {
       setMessages((prev) => prev.filter((m) => m._id !== tempId));
@@ -653,6 +656,7 @@ export default function ChatPage() {
     conversationId: string,
     decomposer_tokens: { prompt_tokens: number; completion_tokens: number },
     difficulty_scorer_tokens: { prompt_tokens: number; completion_tokens: number },
+    difficulty_prompt_carbon: number,
     was_decomposed: boolean,
     originalMessage: string,
     difficultyScore: number = 0,
@@ -694,6 +698,7 @@ export default function ChatPage() {
           userLng: userLocationRef.current?.lng,
           decomposer_tokens,
           difficulty_scorer_tokens,
+          difficulty_prompt_carbon,
           was_decomposed,
         }),
       });
@@ -915,6 +920,19 @@ export default function ChatPage() {
                 subtasks.length > 1
                   ? { subtasks, subtaskResults: localSubtaskResults, difficultyScore }
                   : undefined;
+              if (subtasks.length > 1) {
+                const snap: SubtaskPanelSnapshot = {
+                  subtasks,
+                  subtaskResults: localSubtaskResults,
+                  difficultyScore,
+                  orchestrationCarbon: event.orchestration_carbon,
+                };
+                setSubtaskSnapshots((prev) => {
+                  const next = new Map(prev);
+                  next.set(event.assistantMessage._id, snap);
+                  return next;
+                });
+              }
               setMessages((prev) => {
                 const streamingMsg = prev.find((m) => m._id === streamingId);
                 return [
@@ -925,7 +943,6 @@ export default function ChatPage() {
                     was_decomposed: event.was_decomposed,
                     subtask_count: event.subtask_count,
                     subtask_results: streamingMsg?.subtask_results,
-                    subtaskPanelSnapshot: panelSnapshot,
                   },
                 ];
               });
@@ -970,6 +987,7 @@ export default function ChatPage() {
       pendingExecution.conversationId,
       pendingExecution.decomposer_tokens,
       pendingExecution.difficulty_scorer_tokens,
+      pendingExecution.difficulty_prompt_carbon,
       pendingExecution.was_decomposed,
       pendingExecution.originalMessage,
       activeDifficultyScore,
@@ -1320,8 +1338,8 @@ export default function ChatPage() {
                         visible={true}
                       />
                     )}
-                    {!msg.streaming && msg.subtaskPanelSnapshot && (() => {
-                      const snap = msg.subtaskPanelSnapshot;
+                    {!msg.streaming && subtaskSnapshots.has(msg._id) && (() => {
+                      const snap = subtaskSnapshots.get(msg._id)!;
                       const isExpanded = expandedPanels.has(msg._id);
                       return (
                         <div className="mt-2">
@@ -1349,6 +1367,7 @@ export default function ChatPage() {
                               subtaskResults={snap.subtaskResults}
                               reconstructionState="complete"
                               difficultyScore={snap.difficultyScore}
+                              orchestrationCarbon={snap.orchestrationCarbon}
                               visible={true}
                             />
                           )}

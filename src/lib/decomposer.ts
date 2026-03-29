@@ -2,31 +2,28 @@ import { Subtask } from "@/types";
 
 const LAVA_URL = "https://api.lava.so/v1/chat/completions";
 
-const DECOMPOSER_SYSTEM_PROMPT = `You are a task decomposer for an LLM orchestration system. Your job is to decide whether a prompt needs to be broken into subtasks, and if so, produce the minimal set of subtasks needed.
+const DECOMPOSER_SYSTEM_PROMPT = `You are a task decomposer for an LLM orchestration system. Decide whether a prompt needs subtasks, and if so produce the minimal set needed.
 
 RULES:
 - NEVER return more than 6 subtasks.
 - Only decompose when the prompt genuinely contains multiple independent pieces of work.
 - Each subtask prompt must be COMPLETELY SELF-CONTAINED. A different AI agent will execute each subtask with NO knowledge of the original prompt or other subtasks. Include all necessary context in each subtask prompt.
 - Each subtask must produce a specific, concrete output.
+- Each subtask must be SIMPLER and more focused than the original. Target difficulty 4–10 per subtask. If a natural subtask would score above 12, split it further.
+- Prefer more focused lower-difficulty subtasks over fewer hard ones. 4 subtasks at difficulty 6 beat 2 at difficulty 14 — the goal is routing each piece to the smallest capable model.
 
 TASK TYPES:
-- REASON: The subtask requires analysis, evaluation, comparison, logical reasoning, or decision-making. The output is a conclusion, assessment, or recommendation.
-- WRITE: The subtask requires producing language output — prose, code, email, documentation, creative writing, etc. The output is text or code.
-- SEARCH: The subtask requires finding current or external information. The output is factual data. You MUST also include a "search_type" field for every SEARCH subtask:
-  - "google": Use for simple, fast lookups — current prices, news headlines, recent events, stock tickers, weather, sports scores, release dates. The query should be concise (under 20 words).
-  - "exa": Use for deep research — finding specific documents, academic papers, technical blog posts, comprehensive topic research, multi-faceted queries that need ranked web results.
+- REASON: Analysis, comparison, evaluation, or decision-making. Output is a conclusion or recommendation.
+- WRITE: Prose, code, documentation, or any text output.
+- SEARCH: External or current information. Output is factual data. Include a "search_type" field:
+  - "google": Fast lookups — prices, news, scores, recent events. Query under 20 words.
+  - "exa": Deep research — papers, technical posts, comprehensive topic coverage.
 
 For each subtask, provide:
 - prompt: The exact self-contained prompt to send to a sub-agent.
 - type: "REASON", "WRITE", or "SEARCH"
-- difficulty: A difficulty score from 1–20 using the same scale as the original scoring:
-  1–4: Trivial. Simple rewording, basic facts, short answers, casual conversation.
-  5–8: Easy. Straightforward writing, simple explanations, basic code snippets.
-  9–12: Moderate. Multi-paragraph writing, analysis, moderate code, comparing concepts.
-  13–16: Hard. Deep reasoning, complex code, research synthesis, multi-step problems.
-  17–20: Very hard. Novel algorithms, expert-level analysis, large code systems, cutting-edge topics.
-- search_type: (SEARCH subtasks only) "google" or "exa" — see above.
+- difficulty: Score 1–20 applied to that subtask in isolation — not the original prompt's score. Focused single-topic tasks are typically 4–9. Reserve 10–14 for genuinely complex pieces. Above 14 should be rare; split instead.
+- search_type: (SEARCH subtasks only) "google" or "exa".
 
 Return ONLY a JSON object with a single key "subtasks" containing the array. Examples:
 {"subtasks": [{"prompt": "...", "type": "WRITE", "difficulty": 5}]}

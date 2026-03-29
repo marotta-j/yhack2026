@@ -62,7 +62,7 @@ export default function LoginPage() {
             <LeafIcon className="h-5 w-5 text-emerald-300" />
             <h2 className="mt-3 text-lg font-medium text-emerald-50">Transparent carbon outcomes</h2>
             <p className="mt-2 text-sm leading-relaxed text-emerald-100/75">
-              See how Leaf's orchestration lowers carbon footprint versus one-size-fits-all model usage while still delivering robust answers.
+              See how Leaf&apos;s orchestration lowers carbon footprint versus one-size-fits-all model usage while still delivering robust answers.
             </p>
           </article>
         </section>
@@ -72,7 +72,7 @@ export default function LoginPage() {
             <div>
               <p className="text-lg font-semibold tracking-tight text-emerald-50">Start building with Leaf</p>
               <p className="mt-1 text-sm text-emerald-100/75">
-                Sign in with GitHub to access Leaf's chat orchestration, live routing visuals, and carbon-aware insights.
+                Sign in with GitHub to access Leaf&apos;s chat orchestration, live routing visuals, and carbon-aware insights.
               </p>
             </div>
 
