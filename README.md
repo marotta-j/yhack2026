@@ -17,7 +17,7 @@
 
 ## Overview
 
-Leaf is a powerful, sustainability-focused LLM chat application and middleware built that reduces the environmental impact of AI usage. Built on Next.js, and using a combination of model rightsizing, difficulty prediction, parallel subtasking, and clean energy forecasts, Leaf minimizes token usage and compute waste.
+Leaf is a powerful, sustainability-focused LLM chat application and middleware that reduces the environmental impact of AI usage. Built on Next.js, and using a combination of model rightsizing, difficulty prediction, parallel subtasking, and clean energy forecasts, Leaf minimizes token usage and compute waste.
 
 Every response reports the carbon cost of the computation alongside a user's CO₂ savings, demonstrating the benefit of model rightsizing and subtask generation against naively routing requests through flagship models.
 
@@ -40,9 +40,7 @@ Every response reports the carbon cost of the computation alongside a user's CO�
 - **Google Search** (via Serper) for fast factual lookups, avoiding the waste of LLM-driven fetch tools that retrieve entire pages unnecessarily.
 - **Exa** for deep research and ranked web results, built to minimize costly fetch failiures and optimized for web search speed.
  
-### Lava API Gateway
- 
-We extend the [Lava](https://www.lava.so) API to offer hundreds of LLM providers and datacenter locations to clients from anywhere in the world.
+
  
 ### Carbon Tracking
  
@@ -50,6 +48,18 @@ We extend the [Lava](https://www.lava.so) API to offer hundreds of LLM providers
 - Calculates Savings vs. naive baseline, giving clients transparent visibility into the algorithm's process
 - Displays subtask organization and carbon totals in real time through the sidebar, and creates a client-specific full statistics dashboard
 
+Carbon Tracking is determined through a unit analysis of real-time electric grid statistics and model parameter size. By mapping grid-carbon intensity to hardware efficiency and model compute rates, we can trace the consumption of electricity from token to CO₂ production. Our equations and unit analysis can be found below.
+<div align="center">
+<img src="media/equation.png" width="600" height="auto" alt="Main page">
+</div>
+Carbon-Token Ratio (grams of CO2 per token) = 
+Model Compute Coefficient (Floating Point Operations per token) × 
+Hardware Efficiency coefficient (kiloWatt hours per Floating Point Operation) × 
+Grid-Carbon Intensity (grams of CO2 per kiloWatt hour)
+
+### Lava API Gateway
+ 
+We extend the [Lava](https://www.lava.so) API to offer hundreds of LLM providers and datacenter locations to clients anywhere in the world.
 
 ## Tech Stack
 
