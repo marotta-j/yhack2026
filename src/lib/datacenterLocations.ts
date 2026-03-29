@@ -260,7 +260,7 @@ export const ALL_DATA_CENTERS: DataCenter[] = [
 
 // ─── Haversine distance (km) ─────────────────────────────────────────────────
 
-function haversineKm(
+export function haversineKm(
   lat1: number, lng1: number,
   lat2: number, lng2: number,
 ): number {

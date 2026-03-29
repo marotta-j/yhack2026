@@ -22,6 +22,14 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { GlobeView, ArcData, MarkerData } from "@/components/Globe/GlobeView";
+import { LocationOverridePanel } from "@/components/LocationOverride/LocationOverridePanel";
+import {
+  readLocationOverride,
+  writeLocationOverride,
+  clearLocationOverrideStorage,
+  type StoredLocationOverride,
+  type ResolvedGeo,
+} from "@/lib/locationOverrideStorage";
 import {
   resolveClosestDataCenter,
   resolveDataCenter,
@@ -95,33 +103,77 @@ export default function ChatPage() {
   );
   const [togglePanelOpen, setTogglePanelOpen] = useState(true);
 
+  /** True geolocation from /api/geolocate (your IP). */
+  const [realLocation, setRealLocation] = useState<ResolvedGeo | null>(null);
+  /** Optional spoof — persisted in localStorage, drives pin + routing. */
+  const [locationOverride, setLocationOverride] = useState<StoredLocationOverride | null>(null);
+
   // ── Load conversation list ──────────────────────────────────────────────────
   useEffect(() => {
     fetchConversations();
   }, []);
 
-  // ── Resolve user IP → coordinates and place "You" marker ───────────────────
+  // ── Restore saved location override (client only) ──────────────────────────
+  useEffect(() => {
+    const stored = readLocationOverride();
+    if (stored) setLocationOverride(stored);
+  }, []);
+
+  // ── Resolve real IP → coordinates ───────────────────────────────────────────
   useEffect(() => {
     fetch("/api/geolocate")
       .then((r) => r.json())
       .then((data) => {
-        const loc = { lat: data.lat, lng: data.lng };
-        setUserLocation(loc);
-        userLocationRef.current = loc;
-        setMarkers([
-          {
-            id: "user",
-            lat: data.lat,
-            lng: data.lng,
-            color: USER_COLOR,
-            label: `You${data.city ? ` — ${data.city}` : ""}`,
-            radius: 0.6,
-            pulse: true,
-          },
-        ]);
+        setRealLocation({
+          lat: data.lat,
+          lng: data.lng,
+          city: data.city ?? "",
+          country: data.country ?? "",
+          ip: data.ip ?? "",
+        });
       })
       .catch(() => {});
   }, []);
+
+  // ── Sync effective position: override ?? real ─────────────────────────────
+  useEffect(() => {
+    const effective = locationOverride ?? realLocation;
+    if (!effective) return;
+
+    const loc = { lat: effective.lat, lng: effective.lng };
+    setUserLocation(loc);
+    userLocationRef.current = loc;
+
+    const label = locationOverride
+      ? `You — ${effective.city}${effective.country ? `, ${effective.country}` : ""} (mock)`
+      : `You${effective.city ? ` — ${effective.city}` : ""}`;
+
+    setMarkers((prev) => {
+      const rest = prev.filter((m) => m.id !== "user");
+      return [
+        ...rest,
+        {
+          id: "user",
+          lat: loc.lat,
+          lng: loc.lng,
+          color: USER_COLOR,
+          label,
+          radius: 0.6,
+          pulse: true,
+        },
+      ];
+    });
+  }, [realLocation, locationOverride]);
+
+  function applyLocationOverride(loc: StoredLocationOverride) {
+    writeLocationOverride(loc);
+    setLocationOverride(loc);
+  }
+
+  function clearLocationOverride() {
+    clearLocationOverrideStorage();
+    setLocationOverride(null);
+  }
 
   // ── Load messages when active conversation changes ──────────────────────────
   useEffect(() => {
@@ -156,7 +208,6 @@ export default function ChatPage() {
     }));
   }, [enabledProviders]);
 
-  // Merge background DC dots with user / active-routing markers
   const allMarkers = useMemo<MarkerData[]>(
     () => [...bgDcMarkers, ...markers],
     [bgDcMarkers, markers],
@@ -702,6 +753,27 @@ export default function ChatPage() {
             </div>
           )}
         </div>
+
+        <LocationOverridePanel
+          realLocation={realLocation}
+          override={locationOverride}
+          onApplyOverride={applyLocationOverride}
+          onClearOverride={clearLocationOverride}
+        />
+
+        {locationOverride && (
+          <div className="absolute top-4 left-1/2 -translate-x-1/2 z-10 flex items-center gap-2.5 bg-amber-500/20 backdrop-blur-sm ring-1 ring-amber-400/40 rounded-full px-4 py-2 text-xs text-amber-200 pointer-events-none max-w-[min(90vw,28rem)]">
+            <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse shrink-0" />
+            <span className="font-medium shrink-0">Location override</span>
+            <span className="text-amber-300/60">·</span>
+            <span className="truncate">
+              Map uses {locationOverride.city}, {locationOverride.country}
+              {realLocation?.ip && (
+                <span className="text-amber-300/60"> — real IP {realLocation.ip}</span>
+              )}
+            </span>
+          </div>
+        )}
 
         {/* ── Active routing legend ──────────────────────────────────────────── */}
         {loading && activeDc && (

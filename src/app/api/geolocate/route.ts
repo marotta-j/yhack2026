@@ -9,15 +9,21 @@ export interface GeolocateResponse {
 }
 
 export async function GET(req: NextRequest): Promise<NextResponse<GeolocateResponse>> {
+  // Allow an explicit ?ip= override for the IP-tester dev tool
+  const overrideIp = req.nextUrl.searchParams.get('ip')?.trim() || null;
+
   // Resolve client IP — works behind Vercel / nginx proxies
   const ip =
+    overrideIp ||
     req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ||
     req.headers.get('x-real-ip') ||
     null;
 
-  // Skip geolocation for loopback addresses (local dev)
+  // Skip geolocation for loopback addresses (local dev), unless an explicitip
+  // override was provided (the tester is allowed to look up any IP)
   const isLocal =
-    !ip || ip === '127.0.0.1' || ip === '::1' || ip.startsWith('192.168.') || ip.startsWith('10.');
+    !overrideIp &&
+    (!ip || ip === '127.0.0.1' || ip === '::1' || ip.startsWith('192.168.') || ip.startsWith('10.'));
 
   if (!isLocal && ip) {
     try {
