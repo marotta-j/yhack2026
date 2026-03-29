@@ -21,6 +21,9 @@ import {
   ChevronUpIcon,
   TrashIcon,
   LogOutIcon,
+  LeafIcon,
+  SearchIcon,
+  GlobeIcon,
 } from "lucide-react";
 import Link from "next/link";
 import { useSession, signOut } from "next-auth/react";
@@ -53,6 +56,8 @@ import {
 } from "@/lib/carbonUtils";
 import type { CarbonResponse } from "@/app/api/carbon/route";
 import type { CarbonReport } from "@/types";
+import Image from "next/image";
+import lava from "@/assets/lava.png";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -81,6 +86,7 @@ interface Message {
   was_decomposed?: boolean;
   subtask_count?: number;
   subtask_results?: SubtaskMeta[];
+  searchProviders?: string[];
 }
 
 interface Conversation {
@@ -122,6 +128,10 @@ export default function ChatPage() {
   const [selectedModel, setSelectedModel] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const isStreamingRef = useRef(false);
+  const [chatWidth, setChatWidth] = useState(440);
+  const isDraggingRef = useRef(false);
+  const dragStartXRef = useRef(0);
+  const dragStartWidthRef = useRef(0);
   // Holds token+carbon metadata for the most-recently submitted user message so it
   // can be re-merged if a DB fetch overwrites the messages state (happens on first
   // message when setActiveId triggers the load-messages useEffect).
@@ -638,15 +648,19 @@ export default function ChatPage() {
 
             // ── done event ───────────────────────────────────────────────
             } else if (event.type === "done") {
-              setMessages((prev) => [
-                ...prev.filter((m) => m._id !== streamingId),
-                {
-                  ...event.assistantMessage,
-                  carbon_report: event.carbon_report,
-                  was_decomposed: event.was_decomposed,
-                  subtask_count: event.subtask_count,
-                },
-              ]);
+              setMessages((prev) => {
+                const streamingMsg = prev.find((m) => m._id === streamingId);
+                return [
+                  ...prev.filter((m) => m._id !== streamingId),
+                  {
+                    ...event.assistantMessage,
+                    carbon_report: event.carbon_report,
+                    was_decomposed: event.was_decomposed,
+                    subtask_count: event.subtask_count,
+                    subtask_results: streamingMsg?.subtask_results,
+                  },
+                ];
+              });
               fetchConversations();
 
               const loc = userLocationRef.current;
@@ -817,7 +831,7 @@ export default function ChatPage() {
       </aside>
 
       {/* ── Chat panel ───────────────────────────────────────────────────────── */}
-      <main className="flex flex-col w-[440px] shrink-0 border-r border-border">
+      <main className="flex flex-col shrink-0 border-r border-border" style={{ width: chatWidth }}>
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-border shrink-0">
           <div>
@@ -918,24 +932,62 @@ export default function ChatPage() {
                       {msg.streaming && (
                         <span className="inline-block w-1.5 h-3.5 ml-0.5 bg-foreground/50 animate-pulse rounded-sm align-middle" />
                       )}
+                      {(() => {
+                        if (msg.role !== "assistant") return null;
+                        const liveProviders = msg.subtask_results?.filter(s => s.model_id === "serper-search" || s.model_id === "exa-search").map(s => s.model_id) ?? [];
+                        const providers = liveProviders.length > 0 ? liveProviders : (msg.searchProviders ?? []);
+                        if (providers.length === 0) return null;
+                        return (
+                          <div className="flex flex-col gap-1 mt-2 pt-2 border-t border-border/50">
+                            {providers.includes("serper-search") && (
+                              <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                                <SearchIcon className="w-3 h-3 shrink-0" />
+                                Answered via Google Search — more efficient than prompting a model for live data
+                              </span>
+                            )}
+                            {providers.includes("exa-search") && (
+                              <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                                <GlobeIcon className="w-3 h-3 shrink-0" />
+                                Answered via Exa semantic search — more efficient than fetching and reading full pages
+                              </span>
+                            )}
+                          </div>
+                        );
+                      })()}
                     </div>
                     {!msg.streaming && (
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <span className="text-xs text-muted-foreground">
-                          {formatTime(msg.createdAt)}
-                        </span>
-                        {(msg.totalTokens ?? 0) > 0 && (
+                      <div className="flex flex-col gap-1">
+                        <div className="flex items-center gap-2 flex-wrap">
                           <span className="text-xs text-muted-foreground">
-                            · {msg.totalTokens} tokens
+                            {formatTime(msg.createdAt)}
                           </span>
-                        )}
-                        {(() => {
-                          const carbon = msg.carbon_cost ?? msg.carbon_report?.total_carbon ?? msg.carbonCost;
-                          return carbon != null && carbon > 0 ? (
+                          {(msg.totalTokens ?? 0) > 0 && (
                             <span className="text-xs text-muted-foreground">
-                              · {formatCarbon(carbon)}
+                              · {msg.totalTokens} tokens
                             </span>
-                          ) : null;
+                          )}
+                          {(() => {
+                            const carbon = msg.carbon_cost ?? msg.carbon_report?.total_carbon ?? msg.carbonCost;
+                            return carbon != null && carbon > 0 ? (
+                              <span className="text-xs text-muted-foreground">
+                                · {formatCarbon(carbon)}
+                              </span>
+                            ) : null;
+                          })()}
+                        </div>
+                        {(() => {
+                          if (msg.role !== "assistant") return null;
+                          const delta = msg.carbonDelta ?? msg.carbon_report?.delta;
+                          const baseline = msg.naiveBaseline ?? msg.carbon_report?.naive_baseline;
+                          if (!delta || !baseline || baseline <= 0) return null;
+                          const pct = Math.round((delta / baseline) * 100);
+                          if (pct <= 0) return null;
+                          return (
+                            <span className="inline-flex items-center gap-1 text-xs text-emerald-500">
+                              <LeafIcon className="w-3 h-3" />
+                              {pct}% less tokens versus flagship model
+                            </span>
+                          );
                         })()}
                       </div>
                     )}
@@ -1060,11 +1112,40 @@ export default function ChatPage() {
               )}
             </Button>
           </form>
-          <p className="text-xs text-center text-muted-foreground mt-2">
-            Powered by Lava Gateway{selectedModel ? ` · ${selectedModel}` : ""}
+          <p className="text-xs text-center text-muted-foreground mt-2 flex flex-row items-center justify-center gap-1">
+            {selectedModel ? `Using ${selectedModel} · ` : ""}Powered by Lava
+            <Image
+              src={lava}
+              alt="Lava Gateway"
+              width={15}
+              height={15}
+              className="ml-1"
+            />
           </p>
         </div>
       </main>
+
+      {/* ── Resize handle ────────────────────────────────────────────────────── */}
+      <div
+        className="w-3 shrink-0 cursor-col-resize bg-border hover:bg-primary/50 hover:cursor-ew-resize transition-colors active:bg-primary"
+        onMouseDown={(e) => {
+          isDraggingRef.current = true;
+          dragStartXRef.current = e.clientX;
+          dragStartWidthRef.current = chatWidth;
+          const onMove = (ev: MouseEvent) => {
+            if (!isDraggingRef.current) return;
+            const delta = ev.clientX - dragStartXRef.current;
+            setChatWidth(Math.max(320, Math.min(900, dragStartWidthRef.current + delta)));
+          };
+          const onUp = () => {
+            isDraggingRef.current = false;
+            window.removeEventListener("mousemove", onMove);
+            window.removeEventListener("mouseup", onUp);
+          };
+          window.addEventListener("mousemove", onMove);
+          window.addEventListener("mouseup", onUp);
+        }}
+      />
 
       {/* ── Globe panel ──────────────────────────────────────────────────────── */}
       <div className="flex-1 bg-black relative overflow-hidden">

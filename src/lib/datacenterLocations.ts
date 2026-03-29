@@ -48,10 +48,10 @@ export const MODEL_PROVIDERS: Record<string, string[]> = Object.fromEntries(
   MODELS.map((m) => [m.model_id, m.fulfillment_companies]),
 );
 
-console.log(
-  "[datacenterLocations] MODEL_PROVIDERS derived from config:",
-  JSON.stringify(MODEL_PROVIDERS, null, 2),
-);
+// console.log(
+//   "[datacenterLocations] MODEL_PROVIDERS derived from config:",
+//   JSON.stringify(MODEL_PROVIDERS, null, 2),
+// );
 
 // ─── Helper ──────────────────────────────────────────────────────────────────
 

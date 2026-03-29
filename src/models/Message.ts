@@ -11,6 +11,7 @@ export interface IMessage extends Document {
   carbonCost: number;
   naiveBaseline: number;
   carbonDelta: number;
+  searchProviders: string[];
   createdAt: Date;
 }
 
@@ -26,6 +27,7 @@ const MessageSchema = new Schema<IMessage>(
     carbonCost: { type: Number, default: 0 },
     naiveBaseline: { type: Number, default: 0 },
     carbonDelta: { type: Number, default: 0 },
+    searchProviders: { type: [String], default: [] },
   },
   { timestamps: true }
 );

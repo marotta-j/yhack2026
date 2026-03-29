@@ -42,7 +42,7 @@ export async function decomposePrompt(
   was_decomposed: boolean;
 }> {
   // Score gate: skip decomposition for simple prompts
-  if (originalScore <= 1) {
+  if (originalScore <= 5) {
     return {
       subtasks: [{ prompt, type: "WRITE", difficulty: originalScore }],
       decomposer_tokens: { prompt_tokens: 0, completion_tokens: 0 },
