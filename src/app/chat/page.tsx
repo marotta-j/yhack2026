@@ -41,6 +41,13 @@ import {
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
+interface SubtaskMeta {
+  type: "REASON" | "WRITE" | "SEARCH";
+  model_id: string;
+  difficulty: number;
+  prompt_preview?: string;
+}
+
 interface Message {
   _id: string;
   role: "user" | "assistant";
@@ -49,6 +56,10 @@ interface Message {
   createdAt: string;
   streaming?: boolean;
   rightsizingModel?: string;
+  carbon_report?: unknown;
+  was_decomposed?: boolean;
+  subtask_count?: number;
+  subtask_results?: SubtaskMeta[];
 }
 
 interface Conversation {
@@ -264,7 +275,12 @@ export default function ChatPage() {
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ conversationId: activeId, content: text }),
+        body: JSON.stringify({
+          conversationId: activeId,
+          content: text,
+          userLat: userLocationRef.current?.lat,
+          userLng: userLocationRef.current?.lng,
+        }),
       });
 
       if (!res.ok || !res.body) {
@@ -362,11 +378,30 @@ export default function ChatPage() {
                 ),
               );
 
+            // ── subtask_result event ───────────────────────────────────────
+            } else if (event.type === "subtask_result") {
+              console.log("[chat/page] subtask_result:", event.subtask);
+              setMessages((prev) =>
+                prev.map((m) =>
+                  m._id === streamingId
+                    ? {
+                        ...m,
+                        subtask_results: [...(m.subtask_results ?? []), event.subtask],
+                      }
+                    : m,
+                ),
+              );
+
             // ── done event ─────────────────────────────────────────────────
             } else if (event.type === "done") {
               setMessages((prev) => [
                 ...prev.filter((m) => m._id !== streamingId),
-                event.assistantMessage,
+                {
+                  ...event.assistantMessage,
+                  carbon_report: event.carbon_report,
+                  was_decomposed: event.was_decomposed,
+                  subtask_count: event.subtask_count,
+                },
               ]);
               fetchConversations();
 
