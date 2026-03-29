@@ -13,13 +13,13 @@
 
 </div>
 
-### 🍀 Try it [here](https://be-green.wiki/)!
+### 🍀 Try our product [here](https://be-green.wiki/)!
 
 ## Overview
 
-Leaf is a powerful LLM middleware built on Next.js that reduces the environmental impact of AI chat. Using a combination of model rightsizing, difficulty prediction, parallel subtasking, and clean energy forecasts, Leaf minimizes token usage and compute waste.
+Leaf is a powerful, sustainability-focused LLM chat application and middleware built that reduces the environmental impact of AI usage. Built on Next.js, and using a combination of model rightsizing, difficulty prediction, parallel subtasking, and clean energy forecasts, Leaf minimizes token usage and compute waste.
 
-Every response reports the carbon cost of the computation alongside how much CO₂ was saved compared to naively routing the same request through a flagship model.
+Every response reports the carbon cost of the computation alongside a user's CO₂ savings, demonstrating the benefit of model rightsizing and subtask generation against naively routing requests through flagship models.
 
 ## Screenshots
 <img src="media/main.png" width="600" height="auto" alt="Main page">
@@ -32,23 +32,23 @@ Every response reports the carbon cost of the computation alongside how much CO�
 ### Environmental Middleware
  
 - **Model Rightsizing**: Leaf intelligently selects the most appropriate model for each task, eliminating waste caused by overpowered models handling simple requests.
-- **Parallel Subtasking**: Complex tasks are decomposed into smaller subtasks and presented to the user for confirmation before execution. This prevents costly, hallucinated AI responses that don't contribute to your answer.
-- **Green Datacenter Selection**: Using your location, live grid carbon intensity, and energy forecasts, Leaf routes requests to the most environmentally friendly datacenter available.
+- **Parallel Subtasking**: Complex tasks are decomposed into smaller subtasks and presented to the user for confirmation before execution. This prevents costly AI hallucinations and gives clients visibility and control over their carbon usage.
+- **Green Datacenter Selection**: Using IP-based locations, live grid carbon intensity, and energy forecasts, Leaf routes requests to the most environmentally friendly datacenter available, even allowing clients to route their traffic to greener areas of the globe.
  
 ### Search Integration
  
 - **Google Search** (via Serper) for fast factual lookups, avoiding the waste of LLM-driven fetch tools that retrieve entire pages unnecessarily.
-- **Exa** for deep research and ranked web results.
+- **Exa** for deep research and ranked web results, built to minimize costly fetch failiures and optimized for web search speed.
  
 ### Lava API Gateway
  
-We use [Lava](https://www.lava.so) to offer hundreds of LLM providers and datacenter locations.
+We extend the [Lava](https://www.lava.so) API to offer hundreds of LLM providers and datacenter locations to clients from anywhere in the world.
  
 ### Carbon Tracking
  
-- Per-message carbon cost in µg / mg / g CO₂ using physics-grounded FLOPs accounting
-- Savings vs. naive baseline (running the same tokens through the heaviest available model)
-- Running totals in the sidebar and a full statistics dashboard
+- Renders per-message carbon cost in µg / mg / g CO₂ using physics-grounded FLOPs accounting and real-time grid-carbon intensity information
+- Calculates Savings vs. naive baseline, giving clients transparent visibility into the algorithm's process
+- Displays subtask organization and carbon totals in real time through the sidebar, and creates a client-specific full statistics dashboard
 
 
 ## Tech Stack
