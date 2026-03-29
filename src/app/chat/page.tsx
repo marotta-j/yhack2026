@@ -909,13 +909,19 @@ export default function ChatPage() {
                         <span className="text-xs text-white font-medium truncate">
                           {provider}
                         </span>
-                        {carbonMode && avgCarbon != null ? (
-                          <span
-                            className="text-[10px] shrink-0 tabular-nums font-medium"
-                            style={{ color: tier.color }}
-                          >
-                            {Math.round(avgCarbon)}g
-                          </span>
+                        {carbonMode ? (
+                          avgCarbon != null ? (
+                            <span
+                              className="text-[10px] shrink-0 tabular-nums font-medium"
+                              style={{ color: tier.color }}
+                            >
+                              {Math.round(avgCarbon)}g
+                            </span>
+                          ) : (
+                            <span className="text-[10px] shrink-0 tabular-nums text-white/40">
+                              —
+                            </span>
+                          )
                         ) : (
                           <span
                             className="text-[10px] shrink-0 tabular-nums"
