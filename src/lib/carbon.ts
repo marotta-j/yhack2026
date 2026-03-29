@@ -36,20 +36,20 @@ export function calculateSubtaskCarbon(
  * model (highest flops_per_token) at its nearest datacenter?
  * Used as the "naive" baseline for savings calculation.
  */
+const BASELINE_MODEL_ID = "claude-sonnet-4-6";
+
 export async function calculateNaiveBaseline(
   totalTokens: number,
   userLat: number,
   userLng: number,
 ): Promise<number> {
-  const heavyModel = MODELS.reduce((a, b) =>
-    a.flops_per_token >= b.flops_per_token ? a : b,
-  );
-  const dc = resolveClosestDataCenter(heavyModel.model_id, userLat, userLng);
+  const baselineModel = MODELS.find((m) => m.model_id === BASELINE_MODEL_ID)!;
+  const dc = resolveClosestDataCenter(baselineModel.model_id, userLat, userLng);
   console.log(
-    `[carbon] Naive baseline model: ${heavyModel.model_id} (${heavyModel.flops_per_token} GFLOPs), DC: ${dc.id}`,
+    `[carbon] Naive baseline model: ${baselineModel.model_id} (${baselineModel.flops_per_token} GFLOPs), DC: ${dc.id}`,
   );
   const gridCarbon = await getGridCarbonIntensity(dc.lat, dc.lng);
-  const baseline = calculateSubtaskCarbon(totalTokens, heavyModel.model_id, gridCarbon);
+  const baseline = calculateSubtaskCarbon(totalTokens, baselineModel.model_id, gridCarbon);
   console.log(`[carbon] Naive baseline total: ${baseline.toExponential(3)} gCO₂`);
   return baseline;
 }

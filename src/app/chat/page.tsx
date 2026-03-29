@@ -29,6 +29,8 @@ import Link from "next/link";
 import { useSession, signOut } from "next-auth/react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { MarkdownContent } from "@/components/MarkdownContent";
+import { SubtaskPanel, SubtaskState } from "@/components/SubtaskPanel/SubtaskPanel";
+import { subtaskColor } from "@/lib/subtaskColors";
 import { RoutedSubtask } from "@/types";
 import { GlobeView, ArcData, MarkerData } from "@/components/Globe/GlobeView";
 import { LocationOverridePanel } from "@/components/LocationOverride/LocationOverridePanel";
@@ -66,6 +68,7 @@ interface SubtaskMeta {
   model_id: string;
   difficulty: number;
   prompt_preview?: string;
+  carbon_cost?: number;
 }
 
 interface Message {
@@ -153,6 +156,13 @@ export default function ChatPage() {
     originalMessage: string;
   } | null>(null);
   const [selectedSubtaskIndices, setSelectedSubtaskIndices] = useState<Set<number>>(new Set());
+  // Per-subtask states for the inline SubtaskPanel
+  const [subtaskStates, setSubtaskStates] = useState<SubtaskState[]>([]);
+  const [subtaskResults, setSubtaskResults] = useState<(SubtaskMeta | undefined)[]>([]);
+  const [reconstructionState, setReconstructionState] = useState<SubtaskState>("queued");
+  const [activeDifficultyScore, setActiveDifficultyScore] = useState<number>(0);
+  // The subtasks currently being executed (needed to render SubtaskPanel during streaming)
+  const [activeSubtasks, setActiveSubtasks] = useState<RoutedSubtask[]>([]);
 
   // Globe state
   const [arcs, setArcs] = useState<ArcData[]>([]);
@@ -490,6 +500,7 @@ export default function ChatPage() {
         decomposer_tokens,
         difficulty_prompt_tokens,
         difficulty_prompt_carbon,
+        difficultyScore,
       } = phase1;
 
       // Persist conversation and replace temp user message with saved one,
@@ -515,6 +526,7 @@ export default function ChatPage() {
         // Show confirmation card — user picks which subtasks to run
         isStreamingRef.current = false;
         setLoading(false);
+        setActiveDifficultyScore(difficultyScore ?? 0);
         setPendingExecution({ subtasks, conversationId, decomposer_tokens, was_decomposed, originalMessage: text });
         setSelectedSubtaskIndices(new Set(subtasks.map((_: RoutedSubtask, i: number) => i)));
         setConfirming(true);
@@ -544,9 +556,16 @@ export default function ChatPage() {
     setLoading(true);
     isStreamingRef.current = true;
 
+    // Initialize subtask panel state
+    setActiveSubtasks(subtasks);
+    setSubtaskStates(subtasks.map(() => "queued" as SubtaskState));
+    setSubtaskResults(subtasks.map(() => undefined));
+    setReconstructionState("queued");
+
     const streamingId = `streaming-${Date.now()}`;
-    let outArcIds: string[] = [];
-    let currentDatacenters: ReturnType<typeof resolveClosestDataCenter>[] = [];
+    // Maps subtask index → outbound arc ID so each subtask_result can convert its own arc
+    let outArcIdsByIndex: Map<number, string> = new Map();
+    let currentDatacenters: Map<number, ReturnType<typeof resolveClosestDataCenter>> = new Map();
 
     try {
       const res = await fetch("/api/chat/execute", {
@@ -608,50 +627,15 @@ export default function ChatPage() {
                 },
               ]);
 
-              // Globe: draw simultaneous arcs to all subtask datacenters
+              // Globe: fly camera to centroid of all subtask DCs
               const loc = userLocationRef.current;
-              if (loc) {
-                const newArcs: ArcData[] = [];
-                const newDcs: ReturnType<typeof resolveClosestDataCenter>[] = [];
-                const now = Date.now();
-                for (const subtask of subtasks) {
-                  const dc = resolveClosestDataCenter(subtask.model_id, loc.lat, loc.lng);
-                  const arcId = `arc-out-${now}-${subtask.model_id}`;
-                  outArcIds.push(arcId);
-                  newDcs.push(dc);
-                  newArcs.push({
-                    id: arcId,
-                    startLat: loc.lat,
-                    startLng: loc.lng,
-                    endLat: dc.lat,
-                    endLng: dc.lng,
-                    color: dc.color,
-                    animateTime: 1200,
-                  });
+              if (loc && subtasks.length > 0) {
+                // Pre-resolve all DCs so subtask_start can reference them by index
+                const dcMap = new Map<number, ReturnType<typeof resolveClosestDataCenter>>();
+                for (let i = 0; i < subtasks.length; i++) {
+                  dcMap.set(i, resolveClosestDataCenter(subtasks[i].model_id, loc.lat, loc.lng));
                 }
-                currentDatacenters = newDcs;
-                setArcs((prev) => [...prev, ...newArcs]);
-                setMarkers((prev) => {
-                  let result = [...prev];
-                  for (const dc of newDcs) {
-                    const dcId = `dc-${dc.id}`;
-                    if (!result.some((m) => m.id === dcId)) {
-                      result = [
-                        ...result,
-                        {
-                          id: dcId,
-                          lat: dc.lat,
-                          lng: dc.lng,
-                          color: dc.color,
-                          label: `${dc.name} — ${dc.provider}`,
-                          radius: 0.7,
-                          pulse: true,
-                        },
-                      ];
-                    }
-                  }
-                  return result;
-                });
+                currentDatacenters = dcMap;
               }
 
             // ── delta event ──────────────────────────────────────────────
@@ -664,8 +648,114 @@ export default function ChatPage() {
                 ),
               );
 
+            // ── subtask_start event ──────────────────────────────────────
+            } else if (event.type === "subtask_start") {
+              const idx: number = event.subtask_index;
+              setSubtaskStates((prev) => {
+                const next = [...prev];
+                next[idx] = "running";
+                return next;
+              });
+
+              // Globe: create animated outbound arc for this subtask
+              const loc = userLocationRef.current;
+              const dc = currentDatacenters.get(idx);
+              if (loc && dc) {
+                const arcId = `arc-out-${Date.now()}-${idx}`;
+                outArcIdsByIndex.set(idx, arcId);
+                const color = subtaskColor(idx);
+                setArcs((prev) => [
+                  ...prev,
+                  {
+                    id: arcId,
+                    startLat: loc.lat,
+                    startLng: loc.lng,
+                    endLat: dc.lat,
+                    endLng: dc.lng,
+                    color,
+                    altitude: 0.35,
+                    animateTime: 1200,
+                  },
+                ]);
+                setMarkers((prev) => {
+                  const dcId = `dc-${dc.id}`;
+                  if (prev.some((m) => m.id === dcId)) {
+                    return prev.map((m) => m.id === dcId ? { ...m, pulse: true } : m);
+                  }
+                  return [
+                    ...prev,
+                    {
+                      id: dcId,
+                      lat: dc.lat,
+                      lng: dc.lng,
+                      color: dc.color,
+                      label: `${dc.name} — ${dc.provider}`,
+                      radius: 0.7,
+                      pulse: true,
+                    },
+                  ];
+                });
+              }
+
             // ── subtask_result event ─────────────────────────────────────
             } else if (event.type === "subtask_result") {
+              const idx: number = event.subtask_index ?? 0;
+              setSubtaskStates((prev) => {
+                const next = [...prev];
+                next[idx] = "complete";
+                // If all subtasks are now complete, reconstruction begins
+                if (next.every((s) => s === "complete" || s === "error")) {
+                  setReconstructionState("running");
+                }
+                return next;
+              });
+              setSubtaskResults((prev) => {
+                const next = [...prev];
+                next[idx] = event.subtask;
+                return next;
+              });
+              // Convert this subtask's outbound arc to static + brief inbound
+              const loc = userLocationRef.current;
+              const dc = currentDatacenters.get(idx);
+              const outArcId = outArcIdsByIndex.get(idx);
+              if (loc && dc) {
+                setMarkers((prev) =>
+                  prev.map((m) => m.id === `dc-${dc.id}` ? { ...m, pulse: false } : m),
+                );
+                if (outArcId) {
+                  const now = Date.now();
+                  const staticArcId = `arc-static-${now}-${dc.id}-${idx}`;
+                  const inArcId = `arc-in-${now}-${dc.id}-${idx}`;
+                  const color = subtaskColor(idx);
+                  setArcs((prev) => [
+                    ...prev.filter((a) => a.id !== outArcId),
+                    {
+                      id: staticArcId,
+                      startLat: loc.lat,
+                      startLng: loc.lng,
+                      endLat: dc.lat,
+                      endLng: dc.lng,
+                      color: dc.color,
+                      altitude: 0.18,
+                      static: true,
+                    },
+                    {
+                      id: inArcId,
+                      startLat: dc.lat,
+                      startLng: dc.lng,
+                      endLat: loc.lat,
+                      endLng: loc.lng,
+                      color,
+                      altitude: 0.25,
+                      animateTime: 900,
+                    },
+                  ]);
+                  outArcIdsByIndex.delete(idx);
+                  setTimeout(() => {
+                    setArcs((prev) => prev.filter((a) => a.id !== inArcId));
+                  }, 1600);
+                }
+              }
               setMessages((prev) =>
                 prev.map((m) =>
                   m._id === streamingId
@@ -676,6 +766,7 @@ export default function ChatPage() {
 
             // ── done event ───────────────────────────────────────────────
             } else if (event.type === "done") {
+              setReconstructionState("complete");
               setMessages((prev) => {
                 const streamingMsg = prev.find((m) => m._id === streamingId);
                 return [
@@ -691,47 +782,22 @@ export default function ChatPage() {
               });
               fetchConversations();
 
-              const loc = userLocationRef.current;
-              if (loc && outArcIds.length > 0) {
-                const now = Date.now();
-                const staticArcs: ArcData[] = [];
-                const inArcIds: string[] = [];
-                for (const dc of currentDatacenters) {
-                  const staticArcId = `arc-static-${now}-${dc.id}`;
-                  const inArcId = `arc-in-${now}-${dc.id}`;
-                  inArcIds.push(inArcId);
-                  staticArcs.push({
-                    id: staticArcId,
-                    startLat: loc.lat,
-                    startLng: loc.lng,
-                    endLat: dc.lat,
-                    endLng: dc.lng,
-                    color: dc.color,
-                    static: true,
-                  });
-                  staticArcs.push({
-                    id: inArcId,
-                    startLat: dc.lat,
-                    startLng: dc.lng,
-                    endLat: loc.lat,
-                    endLng: loc.lng,
-                    color: dc.color,
-                    animateTime: 900,
-                  });
-                }
-                setArcs((prev) => [
-                  ...prev.filter((a) => !outArcIds.includes(a.id)),
-                  ...staticArcs,
-                ]);
-                setTimeout(() => {
-                  setArcs((prev) => prev.filter((a) => !inArcIds.includes(a.id)));
-                }, 1600);
+              // Clean up any remaining outbound arcs that weren't converted by subtask_result
+              if (outArcIdsByIndex.size > 0) {
+                const remainingIds = [...outArcIdsByIndex.values()];
+                setArcs((prev) => prev.filter((a) => !remainingIds.includes(a.id)));
+                outArcIdsByIndex.clear();
               }
 
             // ── error event ──────────────────────────────────────────────
             } else if (event.type === "error") {
               setMessages((prev) => prev.filter((m) => m._id !== streamingId));
-              if (outArcIds.length > 0) setArcs((prev) => prev.filter((a) => !outArcIds.includes(a.id)));
+              if (outArcIdsByIndex.size > 0) {
+                const remainingIds = [...outArcIdsByIndex.values()];
+                setArcs((prev) => prev.filter((a) => !remainingIds.includes(a.id)));
+                outArcIdsByIndex.clear();
+              }
+              setSubtaskStates((prev) => prev.map((s) => s === "running" ? "error" : s));
               alert(event.error ?? "Something went wrong");
             }
           } catch {
@@ -1070,6 +1136,16 @@ export default function ChatPage() {
                         );
                       })()}
                     </div>
+                    {msg.streaming && activeSubtasks.length > 1 && (
+                      <SubtaskPanel
+                        subtasks={activeSubtasks}
+                        subtaskStates={subtaskStates}
+                        subtaskResults={subtaskResults}
+                        reconstructionState={reconstructionState}
+                        difficultyScore={activeDifficultyScore}
+                        visible={true}
+                      />
+                    )}
                     {!msg.streaming && (
                       <div className="flex flex-col gap-1">
                         <div className="flex items-center gap-2 flex-wrap">
@@ -1100,7 +1176,7 @@ export default function ChatPage() {
                           return (
                             <span className="inline-flex items-center gap-1 text-xs text-emerald-500">
                               <LeafIcon className="w-3 h-3" />
-                              {pct}% less tokens versus flagship model
+                              {pct}% less carbon versus Sonnet 4.6
                             </span>
                           );
                         })()}

@@ -177,7 +177,7 @@ export function GlobeView({ arcs = [], markers = [], initialPointOfView }: Globe
           arcEndLat={(d: ArcData) => d.endLat}
           arcEndLng={(d: ArcData) => d.endLng}
           arcColor={arcColor}
-          arcAltitude={(d: ArcData) => d.altitude ?? 0.1}
+          arcAltitude={(d: ArcData) => d.altitude ?? (d.static ? 0.18 : 0.35)}
           arcStroke={(d: ArcData) => d.static ? (d.strokeWidth ?? 0.8) : (d.strokeWidth ?? 1.5)}
           // Static arcs: dashLength=1 / gap=0 → solid line, no animation
           // Animated arcs: short comet streak with long gap

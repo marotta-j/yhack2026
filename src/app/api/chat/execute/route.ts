@@ -231,6 +231,16 @@ export async function POST(req: Request) {
 
         const rt = selectedSubtasks[0];
 
+        // Emit subtask_start for the single-subtask path so the client can draw its arc
+        controller.enqueue(
+          enc.encode(JSON.stringify({
+            type: "subtask_start",
+            subtask_index: 0,
+            model_id: rt.model_id,
+            datacenter_id: rt.datacenter_id,
+          }) + "\n"),
+        );
+
         const openaiRes = await fetch(LAVA_URL, {
           method: "POST",
           headers: { Authorization: `Bearer ${forwardToken}`, "Content-Type": "application/json" },
@@ -291,7 +301,8 @@ export async function POST(req: Request) {
         controller.enqueue(
           enc.encode(JSON.stringify({
             type: "subtask_result",
-            subtask: { type: rt.type, model_id: rt.model_id, difficulty: rt.difficulty },
+            subtask_index: 0,
+            subtask: { type: rt.type, model_id: rt.model_id, difficulty: rt.difficulty, carbon_cost: carbon_cost },
           }) + "\n"),
         );
 
@@ -361,6 +372,19 @@ export async function POST(req: Request) {
           const batch = selectedSubtasks.filter((rt) => rt.type === groupType);
           if (batch.length === 0) continue;
 
+          // Emit subtask_start for each subtask in this batch before firing them
+          for (const rt of batch) {
+            const idx = selectedSubtasks.indexOf(rt);
+            controller.enqueue(
+              enc.encode(JSON.stringify({
+                type: "subtask_start",
+                subtask_index: idx,
+                model_id: rt.model_id,
+                datacenter_id: rt.datacenter_id,
+              }) + "\n"),
+            );
+          }
+
           console.log(`[execute/stream] Dispatching ${batch.length} ${groupType} subtask(s)...`);
           const batchResults = await Promise.all(
             batch.map((rt) =>
@@ -372,14 +396,17 @@ export async function POST(req: Request) {
           allResults.push(...batchResults);
 
           for (const result of batchResults) {
+            const idx = selectedSubtasks.indexOf(result as RoutedSubtask);
             controller.enqueue(
               enc.encode(JSON.stringify({
                 type: "subtask_result",
+                subtask_index: idx,
                 subtask: {
                   type: result.type,
                   model_id: result.model_id,
                   difficulty: result.difficulty,
                   prompt_preview: result.prompt.slice(0, 80),
+                  carbon_cost: result.carbon_cost,
                 },
               }) + "\n"),
             );
