@@ -99,6 +99,17 @@ export async function POST(req: Request) {
       // eco_score = gCO₂ per token at this datacenter (single-token carbon cost)
       const eco_score = model.flops_per_token * 1e9 * 3.96e-15 * grid_carbon_intensity;
       console.log(`[chat] Routed subtask: type=${st.type} difficulty=${st.difficulty} → model=${model.model_id} dc=${dc.id}`);
+      // SEARCH subtasks go directly to a search model; all others use difficulty routing
+      let model_id: string;
+      if (st.type === "SEARCH") {
+        model_id = st.search_type === "exa" ? "exa-search" : "serper-search";
+      } else {
+        const model = selectModelForDifficulty(st.difficulty);
+      }
+      const dc = resolveClosestDataCenter(model_id, userLat, userLng);
+      const grid_carbon_intensity = await getGridCarbonIntensity(dc.lat, dc.lng);
+      const eco_score = (MODEL_INTENSITY[model_id] ?? 1.0) * grid_carbon_intensity;
+      console.log(`[chat] Routed subtask: type=${st.type}${st.search_type ? `(${st.search_type})` : ""} difficulty=${st.difficulty} → model=${model_id} dc=${dc.id}`);
       return {
         ...st,
         model_id: model.model_id,
@@ -121,3 +132,4 @@ export async function POST(req: Request) {
     subtasks: routedSubtasks,
   });
 }
+

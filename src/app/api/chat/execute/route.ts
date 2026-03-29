@@ -14,12 +14,8 @@ import { RoutedSubtask, SubtaskResult } from "@/types";
 
 const LAVA_URL = "https://api.lava.so/v1/chat/completions";
 
-/** Dispatch a single subtask to Lava (non-streaming). */
+/** Dispatch a single LLM subtask to Lava (non-streaming). */
 async function dispatchSubtask(rt: RoutedSubtask, forwardToken: string): Promise<SubtaskResult> {
-  if (rt.type === "SEARCH") {
-    console.warn("[dispatch] SEARCH not yet implemented, routing as REASON:", rt.prompt.slice(0, 60));
-  }
-
   const res = await fetch(LAVA_URL, {
     method: "POST",
     headers: {
@@ -43,8 +39,119 @@ async function dispatchSubtask(rt: RoutedSubtask, forwardToken: string): Promise
     rt.grid_carbon_intensity,
   );
 
-  console.log(`[dispatch] Subtask done: ${prompt_tokens}pt + ${completion_tokens}ct, carbon=${carbon_cost}`);
+  console.log(`[dispatch] ${rt.model_id} done: ${prompt_tokens}pt + ${completion_tokens}ct, carbon=${carbon_cost}`);
   return { ...rt, response_text, prompt_tokens, completion_tokens, carbon_cost };
+}
+
+// ── Search helpers ────────────────────────────────────────────────────────────
+
+const LAVA_FORWARD = "https://api.lava.so/v1/forward";
+
+interface SerperResult {
+  position?: number;
+  title?: string;
+  link?: string;
+  snippet?: string;
+}
+
+interface ExaResult {
+  title?: string;
+  url?: string;
+  publishedDate?: string;
+  text?: string;
+}
+
+function formatSerperResults(data: Record<string, unknown>): string {
+  const parts: string[] = [];
+
+  const ab = data.answerBox as Record<string, string> | undefined;
+  if (ab?.answer) {
+    parts.push(`Answer: ${ab.answer}`);
+  } else if (ab?.snippet) {
+    parts.push(`Answer: ${ab.snippet}`);
+  }
+
+  const organic = (data.organic as SerperResult[] | undefined) ?? [];
+  if (organic.length) {
+    parts.push("\nSearch results:");
+    for (const r of organic.slice(0, 6)) {
+      parts.push(`[${r.position}] ${r.title ?? ""}${r.snippet ? ` — ${r.snippet}` : ""}${r.link ? `\n    ${r.link}` : ""}`);
+    }
+  }
+
+  return parts.join("\n") || "No results found.";
+}
+
+function formatExaResults(data: Record<string, unknown>): string {
+  const results = (data.results as ExaResult[] | undefined) ?? [];
+  if (!results.length) return "No results found.";
+
+  return results.map((r) => {
+    const date = r.publishedDate ? ` (${r.publishedDate.slice(0, 10)})` : "";
+    const text = r.text ? `\n  ${r.text.slice(0, 400)}` : "";
+    return `${r.title || "Untitled"}${date}\n  ${r.url ?? ""}${text}`;
+  }).join("\n\n");
+}
+
+/**
+ * Dispatch a SEARCH subtask via Lava's forward proxy.
+ *   search_type "google" → https://google.serper.dev/search  (fast factual lookups)
+ *   search_type "exa"    → https://api.exa.ai/search         (deep research / ranked web)
+ */
+async function dispatchSearch(rt: RoutedSubtask, forwardToken: string): Promise<SubtaskResult> {
+  const isExa = rt.search_type === "exa";
+  const targetUrl = isExa
+    ? "https://api.exa.ai/search"
+    : "https://google.serper.dev/search";
+  const forwardUrl = `${LAVA_FORWARD}?u=${encodeURIComponent(targetUrl)}`;
+  const searchModel = isExa ? "exa-search" : "serper-search";
+
+  console.log(`[dispatch] SEARCH (${searchModel}) → ${targetUrl}`);
+  console.log(`[dispatch] Query: "${rt.prompt.slice(0, 100)}"`);
+
+  const body = isExa
+    ? {
+        query: rt.prompt,
+        numResults: 5,
+        useAutoprompt: true,
+        type: "neural",
+        contents: { text: { maxCharacters: 500 } },
+      }
+    : { q: rt.prompt, num: 8, gl: "us", hl: "en" };
+
+  const res = await fetch(forwardUrl, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${forwardToken}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+
+  if (!res.ok) {
+    const errText = await res.text();
+    console.error(`[dispatch] ${searchModel} HTTP ${res.status}:`, errText.slice(0, 300));
+    throw new Error(`${searchModel} returned ${res.status}: ${errText.slice(0, 200)}`);
+  }
+
+  const data = await res.json() as Record<string, unknown>;
+  console.log(`[dispatch] ${searchModel} response keys:`, Object.keys(data));
+
+  const response_text = isExa ? formatExaResults(data) : formatSerperResults(data);
+  console.log(`[dispatch] ${searchModel} done, formatted length: ${response_text.length} chars`);
+
+  // Search API calls have no LLM token cost
+  const carbon_cost = calculateSubtaskCarbon(0, searchModel, rt.grid_carbon_intensity);
+
+  return {
+    ...rt,
+    model_id: searchModel,
+    lava_model_string: searchModel,
+    response_text,
+    prompt_tokens: 0,
+    completion_tokens: 0,
+    carbon_cost,
+  };
 }
 
 /**
@@ -242,7 +349,13 @@ export async function POST(req: Request) {
           if (batch.length === 0) continue;
 
           console.log(`[execute/stream] Dispatching ${batch.length} ${groupType} subtask(s)...`);
-          const batchResults = await Promise.all(batch.map((rt) => dispatchSubtask(rt, forwardToken)));
+          const batchResults = await Promise.all(
+            batch.map((rt) =>
+              rt.type === "SEARCH"
+                ? dispatchSearch(rt, forwardToken)
+                : dispatchSubtask(rt, forwardToken),
+            ),
+          );
           allResults.push(...batchResults);
 
           for (const result of batchResults) {

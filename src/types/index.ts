@@ -2,6 +2,8 @@ export interface Subtask {
   prompt: string;
   type: "REASON" | "WRITE" | "SEARCH";
   difficulty: number; // 1–20
+  /** Only present when type === "SEARCH". "google" → serper-search, "exa" → exa-search. */
+  search_type?: "google" | "exa";
 }
 
 export interface RoutedSubtask extends Subtask {

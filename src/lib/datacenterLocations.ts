@@ -17,6 +17,8 @@ export interface DataCenter {
   provider: string;
   /** Provider-specific region / zone code, e.g. "us-east-1". */
   region?: string;
+  /** Electricity Maps zone code, e.g. "US-MIDA-PJM". */
+  zone?: string;
   /** Resolved from PROVIDER_COLORS at build time. */
   color: string;
 }
@@ -66,7 +68,7 @@ function dc(
 
 // ─── Full data-center registry ───────────────────────────────────────────────
 
-export const ALL_DATA_CENTERS: DataCenter[] = [
+const _RAW_DATA_CENTERS: DataCenter[] = [
 
   // ══ Google Cloud ═══════════════════════════════════════════════════════════
   dc('gcp-us-east1',          33.84,  -81.16, 'South Carolina',            'Google Cloud', 'us-east1'),
@@ -255,6 +257,196 @@ export const ALL_DATA_CENTERS: DataCenter[] = [
   // ══ xAI ════════════════════════════════════════════════════════════════════
   //  xAI's Colossus supercomputer cluster is in Memphis, TN.
   dc('xai-memphis',           35.15,  -90.05, 'Memphis, TN (Colossus)',    'xAI', 'US-MEM'),
+];
+
+// ─── Electricity Maps zone codes ─────────────────────────────────────────────
+//  Maps each data-center ID to an Electricity Maps zone code.
+//  Zone codes verified against the /v3/carbon-intensity/latest endpoint.
+
+export const DC_ZONE_MAP: Record<string, string> = {
+  // ── Google Cloud ──────────────────────────────────────────────────────────
+  'gcp-us-east1':      'US-CAR-DEC',   // South Carolina
+  'gcp-us-east4':      'US-MIDA-PJM',  // N. Virginia
+  'gcp-us-east5':      'US-MIDA-PJM',  // Columbus OH
+  'gcp-us-central1':   'US-MIDW-MISO', // Iowa
+  'gcp-us-west1':      'US-NW-PACW',   // The Dalles OR
+  'gcp-us-west2':      'US-CAL-CISO',  // Los Angeles
+  'gcp-us-west3':      'US-NW-PACW',   // Salt Lake City
+  'gcp-us-west4':      'US-SW-NEVP',   // Las Vegas
+  'gcp-us-south1':     'US-TEX-ERCO',  // Dallas TX
+  'gcp-na-ne1':        'CA-QC',        // Montréal
+  'gcp-na-ne2':        'CA-ON',        // Toronto
+  'gcp-sa-east1':      'BR-CS',        // São Paulo
+  'gcp-sa-west1':      'CL-SEN',       // Santiago
+  'gcp-eu-west1':      'BE',           // Belgium
+  'gcp-eu-west2':      'GB',           // London
+  'gcp-eu-west3':      'FR',           // Paris
+  'gcp-eu-west4':      'NL',           // Netherlands
+  'gcp-eu-west6':      'CH',           // Zurich
+  'gcp-eu-west8':      'IT-NO',        // Milan
+  'gcp-eu-west10':     'DE',           // Berlin
+  'gcp-eu-west12':     'IT-NO',        // Turin
+  'gcp-eu-north1':     'FI',           // Finland
+  'gcp-eu-central2':   'PL',           // Warsaw
+  'gcp-eu-southwest1': 'ES',           // Madrid
+  'gcp-me-west1':      'IL',           // Tel Aviv
+  'gcp-me-central1':   'QA',           // Doha
+  'gcp-me-central2':   'AE',           // Abu Dhabi
+  'gcp-af-south1':     'ZA',           // Johannesburg
+  'gcp-as-south1':     'IN-WE',        // Mumbai
+  'gcp-as-south2':     'IN-NO',        // Delhi
+  'gcp-as-se1':        'SG',           // Singapore
+  'gcp-as-se2':        'ID-JW',        // Jakarta
+  'gcp-as-east1':      'TW',           // Taiwan
+  'gcp-as-east2':      'HK',           // Hong Kong
+  'gcp-as-ne1':        'JP-TK',        // Tokyo
+  'gcp-as-ne2':        'JP-KY',        // Osaka
+  'gcp-as-ne3':        'KR',           // Seoul
+  'gcp-au-se1':        'AU-NSW',       // Sydney
+  'gcp-au-se2':        'AU-VIC',       // Melbourne
+
+  // ── AWS ───────────────────────────────────────────────────────────────────
+  'aws-us-east-1':     'US-MIDA-PJM',  // N. Virginia
+  'aws-us-east-2':     'US-MIDA-PJM',  // Ohio
+  'aws-us-west-1':     'US-CAL-CISO',  // N. California
+  'aws-us-west-2':     'US-NW-PACW',   // Oregon
+  'aws-ca-central-1':  'CA-QC',        // Montréal
+  'aws-ca-west-1':     'CA-AB',        // Calgary
+  'aws-eu-west-1':     'IE',           // Ireland
+  'aws-eu-west-2':     'GB',           // London
+  'aws-eu-west-3':     'FR',           // Paris
+  'aws-eu-central-1':  'DE',           // Frankfurt
+  'aws-eu-central-2':  'CH',           // Zurich
+  'aws-eu-north-1':    'SE',           // Stockholm
+  'aws-eu-south-1':    'IT-NO',        // Milan
+  'aws-eu-south-2':    'ES',           // Madrid
+  'aws-ap-southeast-1':'SG',           // Singapore
+  'aws-ap-southeast-2':'AU-NSW',       // Sydney
+  'aws-ap-southeast-3':'ID-JW',        // Jakarta
+  'aws-ap-southeast-4':'AU-VIC',       // Melbourne
+  'aws-ap-northeast-1':'JP-TK',        // Tokyo
+  'aws-ap-northeast-2':'KR',           // Seoul
+  'aws-ap-northeast-3':'JP-KY',        // Osaka
+  'aws-ap-south-1':    'IN-WE',        // Mumbai
+  'aws-ap-south-2':    'IN-SO',        // Hyderabad
+  'aws-ap-east-1':     'HK',           // Hong Kong
+  'aws-sa-east-1':     'BR-CS',        // São Paulo
+  'aws-me-south-1':    'BH',           // Bahrain
+  'aws-me-central-1':  'AE',           // UAE Dubai
+  'aws-af-south-1':    'ZA',           // Cape Town
+  'aws-il-central-1':  'IL',           // Israel
+
+  // ── Azure ─────────────────────────────────────────────────────────────────
+  'az-eastus':         'US-MIDA-PJM',  // East US Virginia
+  'az-eastus2':        'US-MIDA-PJM',  // East US 2 Virginia
+  'az-westus':         'US-CAL-CISO',  // West US California
+  'az-westus2':        'US-NW-PACW',   // West US 2 Washington
+  'az-westus3':        'US-SW-AZPS',   // West US 3 Arizona
+  'az-centralus':      'US-MIDW-MISO', // Central US Iowa
+  'az-northcentralus': 'US-MIDW-MISO', // N. Central US Chicago
+  'az-southcentralus': 'US-TEX-ERCO',  // S. Central US Texas
+  'az-westcentralus':  'US-NW-PACW',   // W. Central US Wyoming
+  'az-canadacentral':  'CA-ON',        // Canada Central Toronto
+  'az-canadaeast':     'CA-QC',        // Canada East Québec
+  'az-brazilsouth':    'BR-CS',        // Brazil South
+  'az-northeurope':    'IE',           // North Europe Ireland
+  'az-westeurope':     'NL',           // West Europe Netherlands
+  'az-uksouth':        'GB',           // UK South
+  'az-ukwest':         'GB',           // UK West
+  'az-francecentral':  'FR',           // France Central
+  'az-germanywestcentral': 'DE',       // Germany West Central
+  'az-switzerlandnorth': 'CH',         // Switzerland North
+  'az-norwayeast':     'NO',           // Norway East
+  'az-swedencentral':  'SE',           // Sweden Central
+  'az-polandcentral':  'PL',           // Poland Central
+  'az-italynorth':     'IT-NO',        // Italy North
+  'az-spaincentral':   'ES',           // Spain Central
+  'az-uaenorth':       'AE',           // UAE North
+  'az-southafricanorth': 'ZA',         // South Africa North
+  'az-eastasia':       'HK',           // East Asia Hong Kong
+  'az-southeastasia':  'SG',           // Southeast Asia Singapore
+  'az-australiaeast':  'AU-NSW',       // Australia East Sydney
+  'az-australiasoutheast': 'AU-VIC',   // Australia Southeast Melbourne
+  'az-japaneast':      'JP-TK',        // Japan East Tokyo
+  'az-japanwest':      'JP-KY',        // Japan West Osaka
+  'az-koreacentral':   'KR',           // Korea Central Seoul
+  'az-centralindia':   'IN-WE',        // Central India Pune
+  'az-southindia':     'IN-SO',        // South India Chennai
+  'az-westindia':      'IN-WE',        // West India Mumbai
+  'az-israelcentral':  'IL',           // Israel Central
+  'az-qatarcentral':   'QA',           // Qatar Central
+
+  // ── Oracle (keys must match `id` in registry, e.g. oci-us-ashburn) ─────────
+  'oci-us-ashburn':      'US-MIDA-PJM',
+  'oci-us-phoenix':      'US-SW-AZPS',
+  'oci-us-chicago':      'US-MIDW-MISO',
+  'oci-us-sanjose':      'US-CAL-CISO',
+  'oci-ca-toronto':      'CA-ON',
+  'oci-ca-montreal':     'CA-QC',
+  'oci-eu-frankfurt':    'DE',
+  'oci-eu-amsterdam':    'NL',
+  'oci-eu-london':       'GB',
+  'oci-eu-paris':        'FR',
+  'oci-eu-milan':        'IT-NO',
+  'oci-eu-stockholm':    'SE',
+  'oci-eu-madrid':       'ES',
+  'oci-eu-zurich':       'CH',
+  'oci-eu-marseille':    'FR',
+  'oci-me-dubai':        'AE',
+  'oci-me-abudhabi':     'AE',
+  'oci-me-riyadh':       'SA',
+  'oci-il-jerusalem':    'IL',
+  'oci-af-johannesburg': 'ZA',
+  'oci-ap-mumbai':       'IN-WE',
+  'oci-ap-hyderabad':    'IN-SO',
+  'oci-ap-singapore':    'SG',
+  'oci-ap-sydney':       'AU-NSW',
+  'oci-ap-melbourne':    'AU-VIC',
+  'oci-ap-auckland':     'NZ',
+  'oci-ap-osaka':        'JP-KY',
+  'oci-ap-tokyo':        'JP-TK',
+  'oci-ap-seoul':        'KR',
+  'oci-ap-chuncheon':    'KR',
+  'oci-sa-saopaulo':     'BR-CS',
+  'oci-sa-santiago':     'CL-SEN',
+  'oci-sa-vinhedo':      'BR-CS',
+  'oci-sa-bogota':       'CO',
+
+  // ── SoftBank (keys must match `id` in registry) ───────────────────────────
+  'sb-tokyo1':         'JP-TK',
+  'sb-tokyo2':         'JP-TK',
+  'sb-osaka':          'JP-KY',
+  'sb-fukuoka':        'JP-KY',
+  'sb-nagoya':         'JP-TK',
+  'sb-sapporo':        'JP-TK',
+  'sb-dallas':         'US-TEX-ERCO',
+  'sb-london':         'GB',
+  'sb-singapore':      'SG',
+
+  // ── Nvidia ────────────────────────────────────────────────────────────────
+  'nv-santaclara':     'US-CAL-CISO',
+  'nv-eastus':         'US-MIDA-PJM',
+  'nv-centralus':      'US-MIDW-MISO',
+  'nv-phoenix':        'US-SW-AZPS',
+  'nv-texas':          'US-TEX-ERCO',
+  'nv-frankfurt':      'DE',
+  'nv-netherlands':    'NL',
+  'nv-tokyo':          'JP-TK',
+  'nv-singapore':      'SG',
+
+  // ── xAI ───────────────────────────────────────────────────────────────────
+  'xai-memphis':       'US-TEN-TVA',
+};
+
+/** All data centers enriched with Electricity Maps zone codes. */
+export const ALL_DATA_CENTERS: DataCenter[] = _RAW_DATA_CENTERS.map((d) => ({
+  ...d,
+  zone: DC_ZONE_MAP[d.id] ?? d.zone,
+}));
+
+/** Deduplicated list of all zone codes present in the registry. */
+export const ALL_ZONES: string[] = [
+  ...new Set(Object.values(DC_ZONE_MAP).filter(Boolean)),
 ];
 
 // ─── Haversine distance (km) ─────────────────────────────────────────────────

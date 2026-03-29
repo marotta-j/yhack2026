@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
 import dynamic from 'next/dynamic';
 
 // ─── Public types ─────────────────────────────────────────────────────────────
@@ -50,6 +50,8 @@ interface GlobeViewProps {
   markers?: MarkerData[];
   /** Slowly rotate the globe when no arcs are active. Default true. */
   autoRotate?: boolean;
+  /** Center the globe here on first load (once the globe is ready and location is known). */
+  initialPointOfView?: { lat: number; lng: number; altitude?: number };
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -71,11 +73,13 @@ const GlobeGL = dynamic(() => import('react-globe.gl'), { ssr: false }) as any;
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
-export function GlobeView({ arcs = [], markers = [], autoRotate = true }: GlobeViewProps) {
+export function GlobeView({ arcs = [], markers = [], autoRotate = true, initialPointOfView }: GlobeViewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const globeRef = useRef<any>(null);
   const [size, setSize] = useState({ width: 0, height: 0 });
+  const [globeReady, setGlobeReady] = useState(false);
+  const initialViewApplied = useRef(false);
 
   // Track container dimensions and respond to resize
   useEffect(() => {
@@ -109,6 +113,19 @@ export function GlobeView({ arcs = [], markers = [], autoRotate = true }: GlobeV
     const midLng = (arc.startLng + arc.endLng) / 2;
     globeRef.current.pointOfView?.({ lat: midLat, lng: midLng, altitude: 2.2 }, 1000);
   }, [arcs.length]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Center on user's location once — when both the globe is ready and coords are known.
+  useEffect(() => {
+    if (!globeReady || !initialPointOfView || initialViewApplied.current) return;
+    if (!globeRef.current) return;
+    initialViewApplied.current = true;
+    globeRef.current.pointOfView?.(
+      { lat: initialPointOfView.lat, lng: initialPointOfView.lng, altitude: initialPointOfView.altitude ?? 1.8 },
+      1200,
+    );
+  }, [globeReady, initialPointOfView]);
+
+  const handleGlobeReady = useCallback(() => setGlobeReady(true), []);
 
   // Arc color:
   //   • Animated arcs → comet gradient (transparent tail → bright head)
@@ -148,6 +165,7 @@ export function GlobeView({ arcs = [], markers = [], autoRotate = true }: GlobeV
           width={size.width}
           height={size.height}
           // Globe appearance
+          onGlobeReady={handleGlobeReady}
           globeImageUrl="//unpkg.com/three-globe/example/img/earth-night.jpg"
           backgroundImageUrl="//unpkg.com/three-globe/example/img/night-sky.png"
           atmosphereColor="rgba(80,180,255,0.22)"

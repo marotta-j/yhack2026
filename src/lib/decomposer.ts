@@ -13,7 +13,9 @@ RULES:
 TASK TYPES:
 - REASON: The subtask requires analysis, evaluation, comparison, logical reasoning, or decision-making. The output is a conclusion, assessment, or recommendation.
 - WRITE: The subtask requires producing language output — prose, code, email, documentation, creative writing, etc. The output is text or code.
-- SEARCH: The subtask requires finding current information (prices, news, recent events). The output is factual data.
+- SEARCH: The subtask requires finding current or external information. The output is factual data. You MUST also include a "search_type" field for every SEARCH subtask:
+  - "google": Use for simple, fast lookups — current prices, news headlines, recent events, stock tickers, weather, sports scores, release dates. The query should be concise (under 20 words).
+  - "exa": Use for deep research — finding specific documents, academic papers, technical blog posts, comprehensive topic research, multi-faceted queries that need ranked web results.
 
 For each subtask, provide:
 - prompt: The exact self-contained prompt to send to a sub-agent.
@@ -24,9 +26,12 @@ For each subtask, provide:
   9–12: Moderate. Multi-paragraph writing, analysis, moderate code, comparing concepts.
   13–16: Hard. Deep reasoning, complex code, research synthesis, multi-step problems.
   17–20: Very hard. Novel algorithms, expert-level analysis, large code systems, cutting-edge topics.
+- search_type: (SEARCH subtasks only) "google" or "exa" — see above.
 
-Return ONLY a JSON object with a single key "subtasks" containing the array. Example:
-{"subtasks": [{"prompt": "...", "type": "WRITE", "difficulty": 5}]}`;
+Return ONLY a JSON object with a single key "subtasks" containing the array. Examples:
+{"subtasks": [{"prompt": "...", "type": "WRITE", "difficulty": 5}]}
+{"subtasks": [{"prompt": "What is the current price of TSLA stock?", "type": "SEARCH", "difficulty": 2, "search_type": "google"}]}
+{"subtasks": [{"prompt": "Find recent research papers on transformer attention mechanisms published in 2024", "type": "SEARCH", "difficulty": 8, "search_type": "exa"}]}`;
 
 export async function decomposePrompt(
   prompt: string,
@@ -114,7 +119,19 @@ export async function decomposePrompt(
       if (isNaN(d) || d < 1 || d > 20) {
         throw new Error(`Invalid difficulty: ${item.difficulty}`);
       }
-      subtasks.push({ prompt: item.prompt.trim(), type: item.type, difficulty: d });
+      // Validate search_type for SEARCH subtasks; default to "google" if missing
+      let search_type: "google" | "exa" | undefined;
+      if (item.type === "SEARCH") {
+        if (item.search_type === "exa") {
+          search_type = "exa";
+        } else {
+          search_type = "google"; // default; covers missing or invalid values
+          if (item.search_type && item.search_type !== "google") {
+            console.warn(`[decomposer] Unknown search_type "${item.search_type}", defaulting to "google"`);
+          }
+        }
+      }
+      subtasks.push({ prompt: item.prompt.trim(), type: item.type, difficulty: d, ...(search_type && { search_type }) });
     }
 
     // Sum of difficulties must not exceed originalScore × 1.2
