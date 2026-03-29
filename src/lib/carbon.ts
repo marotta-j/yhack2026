@@ -32,25 +32,32 @@ export function calculateSubtaskCarbon(
 }
 
 /**
- * What would it cost to send the same total tokens to the heaviest available
- * model (highest flops_per_token) at its nearest datacenter?
- * Used as the "naive" baseline for savings calculation.
+ * What would it cost if the user had sent their message directly to the
+ * baseline flagship model (marked isBaseline in models config)?
+ *
+ * Token count = inputTokens (user message, measured by difficulty scorer) +
+ *               outputTokens (final response completion tokens) +
+ *               difficultyTokens (scorer overhead — included because it runs
+ *               even in the naive scenario).
+ * Subtask execution, decomposition, and reconstruction tokens are NOT included.
  */
 export async function calculateNaiveBaseline(
-  totalTokens: number,
+  inputTokens: number,
+  outputTokens: number,
+  difficultyTokens: number,
   userLat: number,
   userLng: number,
 ): Promise<number> {
-  const heavyModel = MODELS.reduce((a, b) =>
-    a.flops_per_token >= b.flops_per_token ? a : b,
-  );
-  const dc = resolveClosestDataCenter(heavyModel.model_id, userLat, userLng);
+  const baselineModel = MODELS.find((m) => m.isBaseline)
+    ?? MODELS.reduce((a, b) => (a.flops_per_token >= b.flops_per_token ? a : b));
+  const dc = resolveClosestDataCenter(baselineModel.model_id, userLat, userLng);
   console.log(
-    `[carbon] Naive baseline model: ${heavyModel.model_id} (${heavyModel.flops_per_token} GFLOPs), DC: ${dc.id}`,
+    `[carbon] Naive baseline model: ${baselineModel.model_id} (${baselineModel.flops_per_token} GFLOPs), DC: ${dc.id}`,
   );
-  const gridCarbon = await getGridCarbonIntensity(dc.lat, dc.lng);
-  const baseline = calculateSubtaskCarbon(totalTokens, heavyModel.model_id, gridCarbon);
-  console.log(`[carbon] Naive baseline total: ${baseline.toExponential(3)} gCO₂`);
+  const gridCarbon = await getGridCarbonIntensity(dc.lat, dc.lng, dc.zone);
+  const totalTokens = inputTokens + outputTokens + difficultyTokens;
+  const baseline = calculateSubtaskCarbon(totalTokens, baselineModel.model_id, gridCarbon);
+  console.log(`[carbon] Naive baseline tokens: ${inputTokens} input + ${outputTokens} output + ${difficultyTokens} difficulty = ${totalTokens}, cost: ${baseline.toExponential(3)} gCO₂`);
   return baseline;
 }
 

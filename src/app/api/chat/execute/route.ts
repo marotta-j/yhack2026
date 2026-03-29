@@ -143,8 +143,9 @@ async function dispatchSearch(rt: RoutedSubtask, forwardToken: string): Promise<
   const response_text = isExa ? formatExaResults(data) : formatSerperResults(data);
   console.log(`[dispatch] ${searchModel} done, formatted length: ${response_text.length} chars`);
 
-  // Search API calls have no LLM token cost
-  const carbon_cost = calculateSubtaskCarbon(0, searchModel, rt.grid_carbon_intensity);
+  // Estimate token equivalent from query + result length (search APIs have no explicit token count)
+  const estimatedTokens = Math.ceil((rt.prompt.length + response_text.length) / 4);
+  const carbon_cost = calculateSubtaskCarbon(estimatedTokens, searchModel, rt.grid_carbon_intensity);
 
   return {
     ...rt,
@@ -179,6 +180,7 @@ export async function POST(req: Request) {
     userLng = -77.46,
     decomposer_tokens,
     was_decomposed,
+    difficulty_scorer_tokens = { prompt_tokens: 0, completion_tokens: 0 },
   }: {
     selectedSubtasks: RoutedSubtask[];
     originalMessage: string;
@@ -187,6 +189,7 @@ export async function POST(req: Request) {
     userLng: number;
     decomposer_tokens: { prompt_tokens: number; completion_tokens: number };
     was_decomposed: boolean;
+    difficulty_scorer_tokens: { prompt_tokens: number; completion_tokens: number };
   } = await req.json();
 
   await connectToDatabase();
@@ -231,6 +234,16 @@ export async function POST(req: Request) {
         }));
 
         const rt = selectedSubtasks[0];
+
+        // Emit subtask_start for the single-subtask path so the client can draw its arc
+        controller.enqueue(
+          enc.encode(JSON.stringify({
+            type: "subtask_start",
+            subtask_index: 0,
+            model_id: rt.model_id,
+            datacenter_id: rt.datacenter_id,
+          }) + "\n"),
+        );
 
         const openaiRes = await fetch(LAVA_URL, {
           method: "POST",
@@ -292,15 +305,18 @@ export async function POST(req: Request) {
         controller.enqueue(
           enc.encode(JSON.stringify({
             type: "subtask_result",
-            subtask: { type: rt.type, model_id: rt.model_id, difficulty: rt.difficulty },
+            subtask_index: 0,
+            subtask: { type: rt.type, model_id: rt.model_id, difficulty: rt.difficulty, carbon_cost: carbon_cost },
           }) + "\n"),
         );
 
-        const totalTokens =
-          usage.total_tokens +
-          decomposer_tokens.prompt_tokens +
-          decomposer_tokens.completion_tokens;
-        const naiveBaseline = await calculateNaiveBaseline(totalTokens, userLat, userLng);
+        const naiveBaseline = await calculateNaiveBaseline(
+          difficulty_scorer_tokens.prompt_tokens,     // user input ≈ scorer's prompt (includes user message)
+          usage.completion_tokens,                    // final output tokens
+          difficulty_scorer_tokens.completion_tokens, // scorer output overhead (tiny JSON score)
+          userLat,
+          userLng,
+        );
         const orchDc = resolveClosestDataCenter("gemini-2.0-flash", userLat, userLng);
         const orchGridCarbon = await getGridCarbonIntensity(orchDc.lat, orchDc.lng, orchDc.zone);
         const carbonReport = buildCarbonReport(
@@ -377,9 +393,26 @@ export async function POST(req: Request) {
           const batch = selectedSubtasks.filter((rt) => rt.type === groupType);
           if (batch.length === 0) continue;
 
+          // Emit subtask_start for each subtask in this batch before firing them
+          for (const rt of batch) {
+            const idx = selectedSubtasks.indexOf(rt);
+            controller.enqueue(
+              enc.encode(JSON.stringify({
+                type: "subtask_start",
+                subtask_index: idx,
+                model_id: rt.model_id,
+                datacenter_id: rt.datacenter_id,
+              }) + "\n"),
+            );
+          }
+
+          // Pair each subtask with its index in selectedSubtasks before dispatching
+          // (results are new spread objects, so indexOf would fail on them)
+          const batchIndexed = batch.map((rt) => ({ rt, idx: selectedSubtasks.indexOf(rt) }));
+
           console.log(`[execute/stream] Dispatching ${batch.length} ${groupType} subtask(s)...`);
           const batchResults = await Promise.all(
-            batch.map((rt) =>
+            batchIndexed.map(({ rt }) =>
               rt.type === "SEARCH"
                 ? dispatchSearch(rt, forwardToken)
                 : dispatchSubtask(rt, forwardToken),
@@ -387,15 +420,19 @@ export async function POST(req: Request) {
           );
           allResults.push(...batchResults);
 
-          for (const result of batchResults) {
+          for (let i = 0; i < batchResults.length; i++) {
+            const result = batchResults[i];
+            const idx = batchIndexed[i].idx;
             controller.enqueue(
               enc.encode(JSON.stringify({
                 type: "subtask_result",
+                subtask_index: idx,
                 subtask: {
                   type: result.type,
                   model_id: result.model_id,
                   difficulty: result.difficulty,
                   prompt_preview: result.prompt.slice(0, 80),
+                  carbon_cost: result.carbon_cost,
                 },
               }) + "\n"),
             );
@@ -426,7 +463,9 @@ export async function POST(req: Request) {
         const orchDc = resolveClosestDataCenter("gemini-2.0-flash", userLat, userLng);
         const orchGridCarbon = await getGridCarbonIntensity(orchDc.lat, orchDc.lng, orchDc.zone);
         const naiveBaseline = await calculateNaiveBaseline(
-          totalSubtaskTokens + totalOrchTokens,
+          difficulty_scorer_tokens.prompt_tokens,     // user input ≈ scorer's prompt (includes user message)
+          reconstructor_tokens.completion_tokens,     // final output tokens (reconstructed response length)
+          difficulty_scorer_tokens.completion_tokens, // scorer output overhead (tiny JSON score)
           userLat,
           userLng,
         );

@@ -113,7 +113,7 @@ export function GlobeView({ arcs = [], markers = [], initialPointOfView }: Globe
     if (arc.static) return;
     const midLat = (arc.startLat + arc.endLat) / 2;
     const midLng = (arc.startLng + arc.endLng) / 2;
-    globeRef.current.pointOfView?.({ lat: midLat, lng: midLng, altitude: 2.2 }, 1000);
+    globeRef.current.pointOfView?.({ lat: midLat, lng: midLng, altitude: 1.1 }, 1000);
   }, [arcs.length]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Center on user's location once — when both the globe is ready and coords are known.
@@ -122,7 +122,7 @@ export function GlobeView({ arcs = [], markers = [], initialPointOfView }: Globe
     if (!globeRef.current) return;
     initialViewApplied.current = true;
     globeRef.current.pointOfView?.(
-      { lat: initialPointOfView.lat, lng: initialPointOfView.lng, altitude: initialPointOfView.altitude ?? 1.8 },
+      { lat: initialPointOfView.lat, lng: initialPointOfView.lng, altitude: initialPointOfView.altitude ?? 0.8 },
       1200,
     );
   }, [globeReady, initialPointOfView]);
@@ -179,7 +179,7 @@ export function GlobeView({ arcs = [], markers = [], initialPointOfView }: Globe
           arcEndLat={(d: ArcData) => d.endLat}
           arcEndLng={(d: ArcData) => d.endLng}
           arcColor={arcColor}
-          arcAltitude={(d: ArcData) => d.altitude ?? 0.1}
+          arcAltitude={(d: ArcData) => d.altitude ?? (d.static ? 0.05 : 0.08)}
           arcStroke={(d: ArcData) => d.static ? (d.strokeWidth ?? 0.8) : (d.strokeWidth ?? 1.5)}
           // Static arcs: dashLength=1 / gap=0 → solid line, no animation
           // Animated arcs: short comet streak with long gap

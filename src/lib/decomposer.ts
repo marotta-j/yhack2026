@@ -5,7 +5,7 @@ const LAVA_URL = "https://api.lava.so/v1/chat/completions";
 const DECOMPOSER_SYSTEM_PROMPT = `You are a task decomposer for an LLM orchestration system. Your job is to decide whether a prompt needs to be broken into subtasks, and if so, produce the minimal set of subtasks needed.
 
 RULES:
-- NEVER return more than 4 subtasks.
+- NEVER return more than 6 subtasks.
 - Only decompose when the prompt genuinely contains multiple independent pieces of work.
 - Each subtask prompt must be COMPLETELY SELF-CONTAINED. A different AI agent will execute each subtask with NO knowledge of the original prompt or other subtasks. Include all necessary context in each subtask prompt.
 - Each subtask must produce a specific, concrete output.
@@ -103,8 +103,8 @@ export async function decomposePrompt(
     }
     const items = parsed.subtasks;
 
-    if (items.length < 1 || items.length > 4) {
-      throw new Error(`Array length ${items.length} out of range 1–4`);
+    if (items.length < 1 || items.length > 6) {
+      throw new Error(`Array length ${items.length} out of range 1–6`);
     }
 
     const subtasks: Subtask[] = [];
