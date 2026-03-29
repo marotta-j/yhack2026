@@ -510,8 +510,7 @@ export default function ChatPage() {
             // ── model event ──────────────────────────────────────────────
             if (event.type === "model") {
               setSelectedModel(event.model);
-              streamingConvIdRef.current = event.conversationId;
-              if (!activeId) setActiveId(event.conversationId);
+              streamingConvIdRef.current = conversationId;
               setMessages((prev) => [
                 ...prev,
                 {
