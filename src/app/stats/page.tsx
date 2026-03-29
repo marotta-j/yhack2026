@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { ArrowLeftIcon, LeafIcon } from "lucide-react";
+import { ArrowLeftIcon, LeafIcon, ZapIcon, FlameIcon, MessageSquareIcon, CoinsIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -86,7 +86,7 @@ const TYPE_COLORS: Record<string, string> = {
 
 const dailyChartConfig: ChartConfig = {
   saved: { label: "CO₂ Saved", color: "var(--color-chart-1)" },
-  used:  { label: "CO₂ Used",  color: "var(--color-chart-2)" },
+  used:  { label: "CO₂ Used",  color: "var(--color-chart-3)" },
 };
 
 const typeChartConfig: ChartConfig = {
@@ -95,14 +95,23 @@ const typeChartConfig: ChartConfig = {
 
 // ── Stat card ──────────────────────────────────────────────────────────────────
 
-function StatCard({ title, value, sub }: { title: string; value: string; sub?: string }) {
+interface StatCardProps {
+  title: string;
+  value: string;
+  sub?: string;
+  icon: React.ReactNode;
+  highlight?: boolean;
+}
+
+function StatCard({ title, value, sub, icon, highlight }: StatCardProps) {
   return (
-    <Card>
-      <CardHeader className="pb-1">
+    <Card className={highlight ? "border-emerald-500/40 bg-emerald-50/40 dark:bg-emerald-950/20" : ""}>
+      <CardHeader className="pb-1 flex flex-row items-center justify-between space-y-0">
         <CardTitle className="text-sm font-medium text-muted-foreground">{title}</CardTitle>
+        <span className={highlight ? "text-emerald-500" : "text-muted-foreground/60"}>{icon}</span>
       </CardHeader>
       <CardContent>
-        <p className="text-2xl font-bold">{value}</p>
+        <p className={`text-2xl font-bold ${highlight ? "text-emerald-600 dark:text-emerald-400" : ""}`}>{value}</p>
         {sub && <p className="text-xs text-muted-foreground mt-0.5">{sub}</p>}
       </CardContent>
     </Card>
@@ -132,7 +141,7 @@ export default function StatsPage() {
   return (
     <div className="min-h-screen bg-background text-foreground">
       {/* Header */}
-      <div className="border-b border-border px-6 py-4 flex items-center gap-4">
+      <div className="border-b border-border px-6 py-4 flex items-center gap-4 bg-emerald-50/30 dark:bg-emerald-950/10">
         <Link href="/chat">
           <Button variant="ghost" size="icon">
             <ArrowLeftIcon className="w-4 h-4" />
@@ -140,7 +149,7 @@ export default function StatsPage() {
         </Link>
         <div className="flex items-center gap-2">
           <LeafIcon className="w-5 h-5 text-emerald-500" />
-          <h1 className="font-semibold text-lg">Statistics</h1>
+          <h1 className="font-semibold text-lg">Your Environmental Impact</h1>
         </div>
       </div>
 
@@ -158,20 +167,25 @@ export default function StatsPage() {
                 title="Total Queries"
                 value={data.totalMessages.toLocaleString()}
                 sub="assistant responses"
+                icon={<MessageSquareIcon className="w-4 h-4" />}
               />
               <StatCard
                 title="Total Tokens"
                 value={data.totalTokens.toLocaleString()}
+                icon={<CoinsIcon className="w-4 h-4" />}
               />
               <StatCard
                 title="Carbon Used"
                 value={formatCarbon(data.totalCarbonCost)}
                 sub="across all queries"
+                icon={<FlameIcon className="w-4 h-4" />}
               />
               <StatCard
                 title="Carbon Saved"
                 value={formatCarbon(data.totalCarbonSaved)}
                 sub={data.savingsPct > 0 ? `${data.savingsPct}% vs flagship model` : undefined}
+                icon={<ZapIcon className="w-4 h-4" />}
+                highlight
               />
             </div>
 
@@ -179,16 +193,29 @@ export default function StatsPage() {
             {data.daily.length > 0 && (
               <Card>
                 <CardHeader>
-                  <CardTitle className="text-sm font-medium">CO₂ Saved per Day (last 30 days)</CardTitle>
+                  <CardTitle className="text-sm font-medium flex items-center gap-2">
+                    <LeafIcon className="w-4 h-4 text-emerald-500" />
+                    CO₂ Saved per Day (last 30 days)
+                  </CardTitle>
                 </CardHeader>
                 <CardContent>
                   <ChartContainer config={dailyChartConfig} className="h-48 w-full">
                     <AreaChart data={data.daily} margin={{ top: 4, right: 4, left: 0, bottom: 0 }}>
+                      <defs>
+                        <linearGradient id="savedGradient" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="5%" stopColor="var(--color-chart-1)" stopOpacity={0.3} />
+                          <stop offset="95%" stopColor="var(--color-chart-1)" stopOpacity={0} />
+                        </linearGradient>
+                        <linearGradient id="usedGradient" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="5%" stopColor="var(--color-chart-3)" stopOpacity={0.2} />
+                          <stop offset="95%" stopColor="var(--color-chart-3)" stopOpacity={0} />
+                        </linearGradient>
+                      </defs>
                       <CartesianGrid strokeDasharray="3 3" className="stroke-border" />
                       <XAxis
                         dataKey="date"
                         tick={{ fontSize: 11 }}
-                        tickFormatter={(v) => v.slice(5)} // MM-DD
+                        tickFormatter={(v) => v.slice(5)}
                       />
                       <YAxis tick={{ fontSize: 11 }} tickFormatter={(v) => `${v.toFixed(1)}g`} />
                       <ChartTooltip content={<ChartTooltipContent />} />
@@ -196,16 +223,14 @@ export default function StatsPage() {
                         type="monotone"
                         dataKey="saved"
                         stroke="var(--color-chart-1)"
-                        fill="var(--color-chart-1)"
-                        fillOpacity={0.2}
+                        fill="url(#savedGradient)"
                         strokeWidth={2}
                       />
                       <Area
                         type="monotone"
                         dataKey="used"
-                        stroke="var(--color-chart-2)"
-                        fill="var(--color-chart-2)"
-                        fillOpacity={0.1}
+                        stroke="var(--color-chart-3)"
+                        fill="url(#usedGradient)"
                         strokeWidth={2}
                       />
                     </AreaChart>
