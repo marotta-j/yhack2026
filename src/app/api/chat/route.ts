@@ -1,4 +1,6 @@
 import { NextResponse } from "next/server";
+import { getServerSession } from "next-auth";
+import { authOptions } from "@/lib/auth";
 import { connectToDatabase } from "@/lib/mongodb";
 import Conversation from "@/models/Conversation";
 import Message from "@/models/Message";
@@ -21,6 +23,12 @@ const LAVA_URL = "https://api.lava.so/v1/chat/completions";
  * or immediately POSTs to /api/chat/execute with the full subtask list.
  */
 export async function POST(req: Request) {
+  const session = await getServerSession(authOptions);
+  if (!session?.user?.id) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
+  }
+  const userId = session.user.id;
+
   const {
     conversationId,
     content,
@@ -35,13 +43,13 @@ export async function POST(req: Request) {
   await connectToDatabase();
   console.log("[chat] POST received:", { conversationId, content: content?.slice(0, 80), userLat, userLng });
 
-  // Get or create conversation
+  // Get or create conversation (verify ownership if existing)
   let conversation = conversationId
-    ? await Conversation.findById(conversationId)
+    ? await Conversation.findOne({ _id: conversationId, userId })
     : null;
 
   if (!conversation) {
-    conversation = await Conversation.create({});
+    conversation = await Conversation.create({ userId });
     console.log("[chat] Created new conversation:", conversation._id.toString());
   } else {
     console.log("[chat] Found existing conversation:", conversation._id.toString());
@@ -50,6 +58,7 @@ export async function POST(req: Request) {
   // Save user message
   const userMessage = await Message.create({
     conversationId: conversation._id,
+    userId,
     role: "user",
     content: content.trim(),
   });

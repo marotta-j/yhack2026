@@ -73,7 +73,7 @@ const GlobeGL = dynamic(() => import('react-globe.gl'), { ssr: false }) as any;
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
-export function GlobeView({ arcs = [], markers = [], autoRotate = true, initialPointOfView }: GlobeViewProps) {
+export function GlobeView({ arcs = [], markers = [], initialPointOfView }: GlobeViewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const globeRef = useRef<any>(null);

@@ -206,7 +206,8 @@ export const MODELS: ModelConfig[] = [
   },
 ];
 
-console.log("[models] Loaded", MODELS.length, "models:", MODELS.map((m) => m.model_id));
+// this debug line was too long
+//console.log("[models] Loaded", MODELS.length, "models:", MODELS.map((m) => m.model_id));
 
 /**
  * Returns the cheapest (lowest flops_per_token) model whose difficulty range

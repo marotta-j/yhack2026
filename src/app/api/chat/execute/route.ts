@@ -1,3 +1,5 @@
+import { getServerSession } from "next-auth";
+import { authOptions } from "@/lib/auth";
 import { connectToDatabase } from "@/lib/mongodb";
 import Conversation from "@/models/Conversation";
 import Message from "@/models/Message";
@@ -162,6 +164,12 @@ async function dispatchSearch(rt: RoutedSubtask, forwardToken: string): Promise<
  * - was_decomposed=true  → parallel dispatch in SEARCH→REASON→WRITE order, chunked deltas
  */
 export async function POST(req: Request) {
+  const session = await getServerSession(authOptions);
+  if (!session?.user?.id) {
+    return new Response(JSON.stringify({ error: "Unauthorized" }), { status: 403 });
+  }
+  const userId = session.user.id;
+
   const {
     selectedSubtasks,
     originalMessage,
@@ -183,7 +191,7 @@ export async function POST(req: Request) {
   await connectToDatabase();
   console.log("[execute] POST: was_decomposed=", was_decomposed, "subtasks=", selectedSubtasks.length);
 
-  const conversation = await Conversation.findById(conversationId);
+  const conversation = await Conversation.findOne({ _id: conversationId, userId });
   if (!conversation) {
     return new Response(JSON.stringify({ error: "Conversation not found" }), { status: 404 });
   }
@@ -306,6 +314,7 @@ export async function POST(req: Request) {
 
         const assistantMessage = await Message.create({
           conversationId,
+          userId,
           role: "assistant",
           content: fullContent,
           promptTokens: usage.prompt_tokens ?? 0,
@@ -319,6 +328,7 @@ export async function POST(req: Request) {
         await SubtaskDocumentModel.create({
           messageId: assistantMessage._id,
           conversationId,
+          userId,
           ...allResults[0],
         });
 
@@ -416,6 +426,7 @@ export async function POST(req: Request) {
 
         const assistantMessage = await Message.create({
           conversationId,
+          userId,
           role: "assistant",
           content: finalResponse,
           promptTokens: 0,
@@ -430,6 +441,7 @@ export async function POST(req: Request) {
           allResults.map((r) => ({
             messageId: assistantMessage._id,
             conversationId,
+            userId,
             prompt: r.prompt,
             type: r.type,
             difficulty: r.difficulty,

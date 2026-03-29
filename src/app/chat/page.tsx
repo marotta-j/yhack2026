@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Separator } from "@/components/ui/separator";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
@@ -20,8 +20,10 @@ import {
   ChevronDownIcon,
   ChevronUpIcon,
   TrashIcon,
+  LogOutIcon,
 } from "lucide-react";
 import Link from "next/link";
+import { useSession, signOut } from "next-auth/react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { MarkdownContent } from "@/components/MarkdownContent";
 import { RoutedSubtask } from "@/types";
@@ -47,7 +49,6 @@ import {
   carbonColor,
   carbonLabel,
   carbonTierOf,
-  CARBON_TIERS,
   CARBON_GRADIENT,
 } from "@/lib/carbonUtils";
 import type { CarbonResponse } from "@/app/api/carbon/route";
@@ -111,6 +112,7 @@ for (const [model, providers] of Object.entries(MODEL_PROVIDERS)) {
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export default function ChatPage() {
+  const session = useSession();
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
@@ -793,7 +795,7 @@ export default function ChatPage() {
         </div>
 
         <Separator />
-        <div className="p-3">
+        <div className="p-3 flex flex-col gap-1">
           <Link href="/stats">
             <Button
               variant="ghost"
@@ -803,6 +805,14 @@ export default function ChatPage() {
               Statistics
             </Button>
           </Link>
+          <Button
+            variant="ghost"
+            className="w-full justify-start gap-2 text-muted-foreground"
+            onClick={() => signOut({ callbackUrl: "/login" })}
+          >
+            <LogOutIcon className="w-4 h-4" />
+            Sign Out
+          </Button>
         </div>
       </aside>
 
@@ -867,6 +877,9 @@ export default function ChatPage() {
                   )}
                 >
                   <Avatar className="w-8 h-8 shrink-0 mt-0.5">
+                    {msg.role === "user" && session.data?.user?.image ? (
+                      <AvatarImage src={session.data?.user?.image ?? undefined} />
+                    ) : undefined}
                     <AvatarFallback
                       className={cn(
                         "text-xs",

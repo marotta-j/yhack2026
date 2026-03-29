@@ -134,13 +134,6 @@ export async function decomposePrompt(
       subtasks.push({ prompt: item.prompt.trim(), type: item.type, difficulty: d, ...(search_type && { search_type }) });
     }
 
-    // Sum of difficulties must not exceed originalScore × 1.2
-    const diffSum = subtasks.reduce((s, t) => s + t.difficulty, 0);
-    const cap = originalScore * 1.2;
-    // if (diffSum > cap) {
-    //   throw new Error(`Difficulty sum ${diffSum} exceeds cap ${cap}`);
-    // }
-
     return { subtasks, decomposer_tokens, was_decomposed: true };
   } catch (err) {
     console.warn("[decomposer] Validation failed, falling back to single subtask:", err);

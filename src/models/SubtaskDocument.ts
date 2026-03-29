@@ -3,6 +3,7 @@ import mongoose, { Document, Schema } from "mongoose";
 export interface ISubtaskDocument extends Document {
   messageId: mongoose.Types.ObjectId;
   conversationId: mongoose.Types.ObjectId;
+  userId: mongoose.Types.ObjectId;
   prompt: string;
   type: "REASON" | "WRITE" | "SEARCH";
   difficulty: number;
@@ -24,6 +25,7 @@ const SubtaskDocumentSchema = new Schema<ISubtaskDocument>(
   {
     messageId: { type: Schema.Types.ObjectId, ref: "Message", required: true, index: true },
     conversationId: { type: Schema.Types.ObjectId, ref: "Conversation", required: true, index: true },
+    userId: { type: Schema.Types.ObjectId, required: true, index: true },
     prompt: { type: String, required: true },
     type: { type: String, enum: ["REASON", "WRITE", "SEARCH"], required: true },
     difficulty: { type: Number, required: true },

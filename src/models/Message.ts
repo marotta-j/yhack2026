@@ -2,6 +2,7 @@ import { Schema, model, models, Document, Types } from "mongoose";
 
 export interface IMessage extends Document {
   conversationId: Types.ObjectId;
+  userId: Types.ObjectId;
   role: "user" | "assistant" | "system";
   content: string;
   promptTokens: number;
@@ -16,6 +17,7 @@ export interface IMessage extends Document {
 const MessageSchema = new Schema<IMessage>(
   {
     conversationId: { type: Schema.Types.ObjectId, ref: "Conversation", required: true, index: true },
+    userId: { type: Schema.Types.ObjectId, required: true, index: true },
     role: { type: String, enum: ["user", "assistant", "system"], required: true },
     content: { type: String, required: true },
     promptTokens: { type: Number, default: 0 },
