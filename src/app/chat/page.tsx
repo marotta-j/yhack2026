@@ -227,6 +227,7 @@ export default function ChatPage() {
     originalMessage: string;
   } | null>(null);
   const [selectedSubtaskIndices, setSelectedSubtaskIndices] = useState<Set<number>>(new Set());
+  const [expandedSubtasks, setExpandedSubtasks] = useState<Set<number>>(new Set());
   // Per-subtask states for the inline SubtaskPanel
   const [subtaskStates, setSubtaskStates] = useState<SubtaskState[]>([]);
   const [subtaskResults, setSubtaskResults] = useState<(SubtaskMeta | undefined)[]>([]);
@@ -974,7 +975,7 @@ export default function ChatPage() {
                 {conversations.map((conv) => (
                   <div
                     key={conv._id}
-                    onClick={() => { setConfirming(false); setPendingExecution(null); setActiveId(conv._id); }}
+                    onClick={() => { setConfirming(false); setPendingExecution(null); setExpandedSubtasks(new Set()); setActiveId(conv._id); }}
                     className={cn(
                       "group relative flex items-center rounded-md text-sm transition-colors",
                       "hover:bg-zinc-800 hover:text-white",
@@ -1309,9 +1310,27 @@ export default function ChatPage() {
                                 {st.model_id}
                               </span>
                             </div>
-                            <p className="text-xs text-muted-foreground leading-relaxed line-clamp-2">
+                            <p className={`text-xs text-muted-foreground leading-relaxed ${expandedSubtasks.has(i) ? "" : "line-clamp-2"}`}>
                               {st.prompt}
                             </p>
+                            {st.prompt.length > 120 && (
+                              <button
+                                type="button"
+                                className="text-[10px] text-primary hover:underline mt-0.5"
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  setExpandedSubtasks((prev) => {
+                                    const next = new Set(prev);
+                                    if (next.has(i)) next.delete(i);
+                                    else next.add(i);
+                                    return next;
+                                  });
+                                }}
+                              >
+                                {expandedSubtasks.has(i) ? "show less" : "...read more"}
+                              </button>
+                            )}
                           </div>
                         </label>
                       ))}
