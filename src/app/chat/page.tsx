@@ -97,7 +97,6 @@ interface Message {
   subtask_count?: number;
   subtask_results?: SubtaskMeta[];
   searchProviders?: string[];
-  subtaskPanelSnapshot?: SubtaskPanelSnapshot;
 }
 
 interface Conversation {
@@ -238,6 +237,8 @@ export default function ChatPage() {
   const [expandedSubtasks, setExpandedSubtasks] = useState<Set<number>>(new Set());
   // Track which completed message panels are expanded (collapsed by default after streaming)
   const [expandedPanels, setExpandedPanels] = useState<Set<string>>(new Set());
+  // Snapshots keyed by assistant message _id — persists independently of messages reload
+  const [subtaskSnapshots, setSubtaskSnapshots] = useState<Map<string, SubtaskPanelSnapshot>>(new Map());
   // Per-subtask states for the inline SubtaskPanel
   const [subtaskStates, setSubtaskStates] = useState<SubtaskState[]>([]);
   const [subtaskResults, setSubtaskResults] = useState<(SubtaskMeta | undefined)[]>([]);
@@ -855,10 +856,18 @@ export default function ChatPage() {
             // ── done event ───────────────────────────────────────────────
             } else if (event.type === "done") {
               setReconstructionState("complete");
-              const panelSnapshot: SubtaskPanelSnapshot | undefined =
-                subtasks.length > 1
-                  ? { subtasks, subtaskResults: localSubtaskResults, difficultyScore }
-                  : undefined;
+              if (subtasks.length > 1) {
+                const snap: SubtaskPanelSnapshot = {
+                  subtasks,
+                  subtaskResults: localSubtaskResults,
+                  difficultyScore,
+                };
+                setSubtaskSnapshots((prev) => {
+                  const next = new Map(prev);
+                  next.set(event.assistantMessage._id, snap);
+                  return next;
+                });
+              }
               setMessages((prev) => {
                 const streamingMsg = prev.find((m) => m._id === streamingId);
                 return [
@@ -869,7 +878,6 @@ export default function ChatPage() {
                     was_decomposed: event.was_decomposed,
                     subtask_count: event.subtask_count,
                     subtask_results: streamingMsg?.subtask_results,
-                    subtaskPanelSnapshot: panelSnapshot,
                   },
                 ];
               });
@@ -1241,8 +1249,8 @@ export default function ChatPage() {
                         visible={true}
                       />
                     )}
-                    {!msg.streaming && msg.subtaskPanelSnapshot && (() => {
-                      const snap = msg.subtaskPanelSnapshot;
+                    {!msg.streaming && subtaskSnapshots.has(msg._id) && (() => {
+                      const snap = subtaskSnapshots.get(msg._id)!;
                       const isExpanded = expandedPanels.has(msg._id);
                       return (
                         <div className="mt-2">
