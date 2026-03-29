@@ -143,8 +143,9 @@ async function dispatchSearch(rt: RoutedSubtask, forwardToken: string): Promise<
   const response_text = isExa ? formatExaResults(data) : formatSerperResults(data);
   console.log(`[dispatch] ${searchModel} done, formatted length: ${response_text.length} chars`);
 
-  // Search API calls have no LLM token cost
-  const carbon_cost = calculateSubtaskCarbon(0, searchModel, rt.grid_carbon_intensity);
+  // Estimate token equivalent from query + result length (search APIs have no explicit token count)
+  const estimatedTokens = Math.ceil((rt.prompt.length + response_text.length) / 4);
+  const carbon_cost = calculateSubtaskCarbon(estimatedTokens, searchModel, rt.grid_carbon_intensity);
 
   return {
     ...rt,

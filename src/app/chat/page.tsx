@@ -31,6 +31,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { MarkdownContent } from "@/components/MarkdownContent";
 import { SubtaskPanel, SubtaskState } from "@/components/SubtaskPanel/SubtaskPanel";
 import { subtaskColor } from "@/lib/subtaskColors";
+import { MODELS } from "@/config/models";
 import { RoutedSubtask } from "@/types";
 import { GlobeView, ArcData, MarkerData } from "@/components/Globe/GlobeView";
 import { LocationOverridePanel } from "@/components/LocationOverride/LocationOverridePanel";
@@ -71,6 +72,12 @@ interface SubtaskMeta {
   carbon_cost?: number;
 }
 
+interface SubtaskPanelSnapshot {
+  subtasks: RoutedSubtask[];
+  subtaskResults: (SubtaskMeta | undefined)[];
+  difficultyScore: number;
+}
+
 interface Message {
   _id: string;
   role: "user" | "assistant";
@@ -90,6 +97,7 @@ interface Message {
   subtask_count?: number;
   subtask_results?: SubtaskMeta[];
   searchProviders?: string[];
+  subtaskPanelSnapshot?: SubtaskPanelSnapshot;
 }
 
 interface Conversation {
@@ -228,6 +236,8 @@ export default function ChatPage() {
   } | null>(null);
   const [selectedSubtaskIndices, setSelectedSubtaskIndices] = useState<Set<number>>(new Set());
   const [expandedSubtasks, setExpandedSubtasks] = useState<Set<number>>(new Set());
+  // Track which completed message panels are expanded (collapsed by default after streaming)
+  const [expandedPanels, setExpandedPanels] = useState<Set<string>>(new Set());
   // Per-subtask states for the inline SubtaskPanel
   const [subtaskStates, setSubtaskStates] = useState<SubtaskState[]>([]);
   const [subtaskResults, setSubtaskResults] = useState<(SubtaskMeta | undefined)[]>([]);
@@ -566,13 +576,17 @@ export default function ChatPage() {
       const {
         conversationId,
         userMessage,
-        subtasks,
         was_decomposed,
         decomposer_tokens,
         difficulty_prompt_tokens,
         difficulty_prompt_carbon,
         difficultyScore,
       } = phase1;
+      // Sort subtasks SEARCH → REASON → WRITE for consistent display order
+      const TYPE_DISPLAY_ORDER: Record<string, number> = { SEARCH: 0, REASON: 1, WRITE: 2 };
+      const subtasks: RoutedSubtask[] = [...(phase1.subtasks as RoutedSubtask[])].sort(
+        (a, b) => (TYPE_DISPLAY_ORDER[a.type] ?? 3) - (TYPE_DISPLAY_ORDER[b.type] ?? 3),
+      );
 
       // Persist conversation and replace temp user message with saved one,
       // attaching scorer token + carbon data for display under the user bubble.
@@ -603,7 +617,7 @@ export default function ChatPage() {
         setConfirming(true);
       } else {
         // Single subtask — skip confirmation, fire Phase 2 immediately
-        await executeSubtasks(subtasks, conversationId, decomposer_tokens, { prompt_tokens: difficulty_prompt_tokens ?? 0, completion_tokens: 0 }, was_decomposed, text);
+        await executeSubtasks(subtasks, conversationId, decomposer_tokens, { prompt_tokens: difficulty_prompt_tokens ?? 0, completion_tokens: 0 }, was_decomposed, text, difficultyScore ?? 0);
       }
     } catch {
       setMessages((prev) => prev.filter((m) => m._id !== tempId));
@@ -622,6 +636,7 @@ export default function ChatPage() {
     difficulty_scorer_tokens: { prompt_tokens: number; completion_tokens: number },
     was_decomposed: boolean,
     originalMessage: string,
+    difficultyScore: number = 0,
   ) {
     setConfirming(false);
     setPendingExecution(null);
@@ -633,6 +648,9 @@ export default function ChatPage() {
     setSubtaskStates(subtasks.map(() => "queued" as SubtaskState));
     setSubtaskResults(subtasks.map(() => undefined));
     setReconstructionState("queued");
+
+    // Local mirror of subtaskResults for snapshot capture at done time (avoids stale closure)
+    let localSubtaskResults: (SubtaskMeta | undefined)[] = subtasks.map(() => undefined);
 
     const streamingId = `streaming-${Date.now()}`;
     // Maps subtask index → outbound arc ID so each subtask_result can convert its own arc
@@ -794,11 +812,8 @@ export default function ChatPage() {
                 }
                 return next;
               });
-              setSubtaskResults((prev) => {
-                const next = [...prev];
-                next[idx] = event.subtask;
-                return next;
-              });
+              localSubtaskResults = localSubtaskResults.map((r, i) => i === idx ? event.subtask : r);
+              setSubtaskResults([...localSubtaskResults]);
               // Convert this subtask's outbound arc to a persistent static arc
               const loc = userLocationRef.current;
               const dc = currentDatacenters.get(idx);
@@ -840,6 +855,10 @@ export default function ChatPage() {
             // ── done event ───────────────────────────────────────────────
             } else if (event.type === "done") {
               setReconstructionState("complete");
+              const panelSnapshot: SubtaskPanelSnapshot | undefined =
+                subtasks.length > 1
+                  ? { subtasks, subtaskResults: localSubtaskResults, difficultyScore }
+                  : undefined;
               setMessages((prev) => {
                 const streamingMsg = prev.find((m) => m._id === streamingId);
                 return [
@@ -850,6 +869,7 @@ export default function ChatPage() {
                     was_decomposed: event.was_decomposed,
                     subtask_count: event.subtask_count,
                     subtask_results: streamingMsg?.subtask_results,
+                    subtaskPanelSnapshot: panelSnapshot,
                   },
                 ];
               });
@@ -896,6 +916,7 @@ export default function ChatPage() {
       pendingExecution.difficulty_scorer_tokens,
       pendingExecution.was_decomposed,
       pendingExecution.originalMessage,
+      activeDifficultyScore,
     );
   }
 
@@ -1220,6 +1241,41 @@ export default function ChatPage() {
                         visible={true}
                       />
                     )}
+                    {!msg.streaming && msg.subtaskPanelSnapshot && (() => {
+                      const snap = msg.subtaskPanelSnapshot;
+                      const isExpanded = expandedPanels.has(msg._id);
+                      return (
+                        <div className="mt-2">
+                          <button
+                            type="button"
+                            onClick={() => setExpandedPanels((prev) => {
+                              const next = new Set(prev);
+                              if (next.has(msg._id)) next.delete(msg._id);
+                              else next.add(msg._id);
+                              return next;
+                            })}
+                            className="flex items-center gap-2 px-2 py-1 rounded-md text-white/35 hover:text-white/55 hover:bg-white/5 transition-colors text-xs"
+                          >
+                            <LayersIcon className="w-3 h-3" />
+                            <span>Pipeline · {snap.subtasks.length} subtasks</span>
+                            {isExpanded
+                              ? <ChevronUpIcon className="w-3 h-3" />
+                              : <ChevronDownIcon className="w-3 h-3" />
+                            }
+                          </button>
+                          {isExpanded && (
+                            <SubtaskPanel
+                              subtasks={snap.subtasks}
+                              subtaskStates={snap.subtasks.map(() => "complete" as SubtaskState)}
+                              subtaskResults={snap.subtaskResults}
+                              reconstructionState="complete"
+                              difficultyScore={snap.difficultyScore}
+                              visible={true}
+                            />
+                          )}
+                        </div>
+                      );
+                    })()}
                     {!msg.streaming && (
                       <div className="flex flex-col gap-1">
                         <div className="flex items-center gap-2 flex-wrap">
@@ -1250,7 +1306,7 @@ export default function ChatPage() {
                           return (
                             <span className="inline-flex items-center gap-1 text-xs text-emerald-500">
                               <LeafIcon className="w-3 h-3" />
-                              {pct}% less carbon versus Sonnet 4.6
+                              {pct}% less carbon versus {MODELS.find((m) => m.isBaseline)?.display_name ?? "baseline"}
                             </span>
                           );
                         })()}

@@ -170,7 +170,6 @@ export const MODELS: ModelConfig[] = [
     difficulty_max: 14,
     flops_per_token: 140,       // dense ~70B params, 2×70 = 140 GFLOPs
     fulfillment_companies: ["AWS", "Google Cloud"],
-    isBaseline: true,
   },
   {
     model_id: "grok-3",
@@ -209,6 +208,7 @@ export const MODELS: ModelConfig[] = [
     difficulty_max: 20,
     flops_per_token: 500,       // dense ~250B params, 2×250 = 500 GFLOPs
     fulfillment_companies: ["AWS", "Google Cloud"],
+    isBaseline: true,
   },
 ];
 
