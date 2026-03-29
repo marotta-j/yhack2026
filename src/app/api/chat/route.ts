@@ -6,7 +6,7 @@ import { decomposePrompt } from "@/lib/decomposer";
 import { resolveClosestDataCenter } from "@/lib/datacenterLocations";
 import { getGridCarbonIntensity } from "@/lib/electricitymap";
 import { selectModelForDifficulty, FLOPS_PER_TOKEN } from "@/config/models";
-import { KWH_PER_FLOP_H100 } from "@/lib/carbon";
+import { KWH_PER_FLOP_H100, calculateSubtaskCarbon } from "@/lib/carbon";
 import { Subtask, RoutedSubtask } from "@/types";
 
 const LAVA_URL = "https://api.lava.so/v1/chat/completions";
@@ -75,12 +75,22 @@ export async function POST(req: Request) {
   });
 
   let difficultyScore = 10;
+  let difficultyPromptTokens = 0;
+  let difficultyPromptCarbon = 0;
   if (difficultyRes.ok) {
     const difficultyData = await difficultyRes.json();
     try {
       const parsed = JSON.parse(difficultyData.choices?.[0]?.message?.content ?? "{}");
       difficultyScore = Math.min(20, Math.max(1, parseInt(parsed.score, 10) || 10));
     } catch {}
+    // Capture prompt tokens sent to the difficulty scorer and compute their carbon cost
+    difficultyPromptTokens = difficultyData.usage?.prompt_tokens ?? 0;
+    if (difficultyPromptTokens > 0) {
+      const scorerDc = resolveClosestDataCenter("gpt-5-nano", userLat, userLng);
+      const scorerGridCarbon = await getGridCarbonIntensity(scorerDc.lat, scorerDc.lng, scorerDc.zone);
+      difficultyPromptCarbon = calculateSubtaskCarbon(difficultyPromptTokens, "gpt-5-nano", scorerGridCarbon);
+      console.log(`[chat] Scorer tokens: ${difficultyPromptTokens}, carbon: ${difficultyPromptCarbon.toExponential(3)} gCO₂`);
+    }
   }
   console.log("[chat] Difficulty score:", difficultyScore);
 
@@ -106,7 +116,7 @@ export async function POST(req: Request) {
         lava_model_string = model.lava_model_string;
       }
       const dc = resolveClosestDataCenter(model_id, userLat, userLng);
-      const grid_carbon_intensity = await getGridCarbonIntensity(dc.lat, dc.lng);
+      const grid_carbon_intensity = await getGridCarbonIntensity(dc.lat, dc.lng, dc.zone);
       // eco_score = gCO₂ per token at this datacenter
       const eco_score = (FLOPS_PER_TOKEN[model_id] ?? 14) * 1e9 * KWH_PER_FLOP_H100 * grid_carbon_intensity;
       console.log(`[chat] Routed subtask: type=${st.type}${st.search_type ? `(${st.search_type})` : ""} difficulty=${st.difficulty} → model=${model_id} dc=${dc.id}`);
@@ -130,6 +140,8 @@ export async function POST(req: Request) {
     decomposer_tokens,
     was_decomposed,
     subtasks: routedSubtasks,
+    difficulty_prompt_tokens: difficultyPromptTokens,
+    difficulty_prompt_carbon: difficultyPromptCarbon,
   });
 }
 

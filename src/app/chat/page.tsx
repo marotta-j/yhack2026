@@ -51,6 +51,7 @@ import {
   CARBON_GRADIENT,
 } from "@/lib/carbonUtils";
 import type { CarbonResponse } from "@/app/api/carbon/route";
+import type { CarbonReport } from "@/types";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -69,7 +70,9 @@ interface Message {
   createdAt: string;
   streaming?: boolean;
   rightsizingModel?: string;
-  carbon_report?: unknown;
+  carbon_report?: CarbonReport;
+  /** Carbon cost in gCO₂ — prompt carbon for user messages, total carbon for assistant messages */
+  carbon_cost?: number;
   was_decomposed?: boolean;
   subtask_count?: number;
   subtask_results?: SubtaskMeta[];
@@ -113,6 +116,10 @@ export default function ChatPage() {
   const [selectedModel, setSelectedModel] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const isStreamingRef = useRef(false);
+  // Holds token+carbon metadata for the most-recently submitted user message so it
+  // can be re-merged if a DB fetch overwrites the messages state (happens on first
+  // message when setActiveId triggers the load-messages useEffect).
+  const pendingUserMetaRef = useRef<{ _id: string; totalTokens: number; carbon_cost: number } | null>(null);
 
   // Per-conversation globe snapshots (static arcs + active DC markers)
   const convGlobeRef = useRef<Record<string, { arcs: ArcData[]; dcMarkers: MarkerData[] }>>({});
@@ -292,7 +299,22 @@ export default function ChatPage() {
     setLoadingMessages(true);
     fetch(`/api/conversations/${activeId}/messages`)
       .then((r) => r.json())
-      .then((data) => setMessages(data))
+      .then((data: Message[]) => {
+        // Re-merge any pending token/carbon metadata that was set before this
+        // fetch overwrote the messages state (happens on first message in a
+        // new conversation when setActiveId triggers this effect).
+        const meta = pendingUserMetaRef.current;
+        if (meta) {
+          pendingUserMetaRef.current = null;
+          setMessages(data.map((m) =>
+            m._id === meta._id
+              ? { ...m, totalTokens: meta.totalTokens, carbon_cost: meta.carbon_cost }
+              : m,
+          ));
+        } else {
+          setMessages(data);
+        }
+      })
       .finally(() => setLoadingMessages(false));
   }, [activeId]);
 
@@ -427,11 +449,34 @@ export default function ChatPage() {
       }
 
       const phase1 = await res.json();
-      const { conversationId, userMessage, subtasks, was_decomposed, decomposer_tokens } = phase1;
+      const {
+        conversationId,
+        userMessage,
+        subtasks,
+        was_decomposed,
+        decomposer_tokens,
+        difficulty_prompt_tokens,
+        difficulty_prompt_carbon,
+      } = phase1;
 
-      // Persist conversation and replace temp user message with saved one
+      // Persist conversation and replace temp user message with saved one,
+      // attaching scorer token + carbon data for display under the user bubble.
+      // Store in ref FIRST so the load-messages useEffect (triggered by setActiveId
+      // on a new conversation) can re-merge after it overwrites state from the DB.
+      pendingUserMetaRef.current = {
+        _id: userMessage._id,
+        totalTokens: difficulty_prompt_tokens ?? 0,
+        carbon_cost: difficulty_prompt_carbon ?? 0,
+      };
       if (!activeId) setActiveId(conversationId);
-      setMessages((prev) => [...prev.filter((m) => m._id !== tempId), userMessage]);
+      setMessages((prev) => [
+        ...prev.filter((m) => m._id !== tempId),
+        {
+          ...userMessage,
+          totalTokens: difficulty_prompt_tokens ?? 0,
+          carbon_cost: difficulty_prompt_carbon ?? 0,
+        },
+      ]);
 
       if (was_decomposed && subtasks.length > 1) {
         // Show confirmation card — user picks which subtasks to run
@@ -663,6 +708,14 @@ export default function ChatPage() {
     return new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   }
 
+  /** Format a carbon value (gCO₂) into a human-readable string with appropriate prefix. */
+  function formatCarbon(g: number): string {
+    if (g < 0.001) return `${(g * 1e6).toFixed(1)} µg CO₂`;
+    if (g < 1)     return `${(g * 1000).toFixed(2)} mg CO₂`;
+    if (g < 1000)  return `${g.toFixed(2)} g CO₂`;
+    return `${(g / 1000).toFixed(2)} kg CO₂`;
+  }
+
   const isStreaming = messages.some((m) => m.streaming);
 
   // The DC shown in the bottom legend (uses real user location when available)
@@ -850,15 +903,23 @@ export default function ChatPage() {
                       )}
                     </div>
                     {!msg.streaming && (
-                      <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-2 flex-wrap">
                         <span className="text-xs text-muted-foreground">
                           {formatTime(msg.createdAt)}
                         </span>
-                        {msg.totalTokens && msg.totalTokens > 0 && (
+                        {(msg.totalTokens ?? 0) > 0 && (
                           <span className="text-xs text-muted-foreground">
                             · {msg.totalTokens} tokens
                           </span>
                         )}
+                        {(() => {
+                          const carbon = msg.carbon_cost ?? msg.carbon_report?.total_carbon;
+                          return carbon != null && carbon > 0 ? (
+                            <span className="text-xs text-muted-foreground">
+                              · {formatCarbon(carbon)}
+                            </span>
+                          ) : null;
+                        })()}
                       </div>
                     )}
                   </div>
@@ -1168,7 +1229,7 @@ export default function ChatPage() {
           const activeGrams = activeZoneData?.carbonIntensity ?? null;
           const activeTier = carbonTierOf(activeGrams);
           return (
-            <div className="absolute bottom-4 left-1/2 -translate-x-1/2 flex gap-3 bg-black/60 backdrop-blur-sm rounded-full px-4 py-2 text-xs text-white pointer-events-none whitespace-nowrap">
+            <div className="absolute bottom-4 right-4 flex gap-3 bg-black/60 backdrop-blur-sm rounded-full px-4 py-2 text-xs text-white pointer-events-none whitespace-nowrap">
               <span className="flex items-center gap-1.5">
                 <span
                   className="w-2 h-2 rounded-full animate-pulse"

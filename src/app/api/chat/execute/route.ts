@@ -308,7 +308,7 @@ export async function POST(req: Request) {
           decomposer_tokens.completion_tokens;
         const naiveBaseline = await calculateNaiveBaseline(totalTokens, userLat, userLng);
         const orchDc = resolveClosestDataCenter("gemini-2.0-flash", userLat, userLng);
-        const orchGridCarbon = await getGridCarbonIntensity(orchDc.lat, orchDc.lng);
+        const orchGridCarbon = await getGridCarbonIntensity(orchDc.lat, orchDc.lng, orchDc.zone);
         const carbonReport = buildCarbonReport(
           allResults,
           decomposer_tokens.prompt_tokens + decomposer_tokens.completion_tokens,
@@ -424,7 +424,7 @@ export async function POST(req: Request) {
         );
 
         const orchDc = resolveClosestDataCenter("gemini-2.0-flash", userLat, userLng);
-        const orchGridCarbon = await getGridCarbonIntensity(orchDc.lat, orchDc.lng);
+        const orchGridCarbon = await getGridCarbonIntensity(orchDc.lat, orchDc.lng, orchDc.zone);
         const naiveBaseline = await calculateNaiveBaseline(
           totalSubtaskTokens + totalOrchTokens,
           userLat,

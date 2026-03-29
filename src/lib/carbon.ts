@@ -76,11 +76,11 @@ export function buildCarbonReport(
   const delta = naiveBaseline - total_carbon;
 
   console.log("[carbon] buildCarbonReport:", {
-    subtaskCarbon: subtaskCarbon.toExponential(3),
-    orchestration_overhead: orchestration_overhead.toExponential(3),
-    total_carbon: total_carbon.toExponential(3),
-    naive_baseline: naiveBaseline.toExponential(3),
-    delta: delta.toExponential(3),
+    subtaskCarbon: subtaskCarbon.toFixed(0),
+    orchestration_overhead: orchestration_overhead.toFixed(0),
+    total_carbon: total_carbon.toFixed(0),
+    naive_baseline: naiveBaseline.toFixed(0),
+    delta: delta.toFixed(0),
     savings_pct: naiveBaseline > 0 ? ((delta / naiveBaseline) * 100).toFixed(1) + "%" : "n/a",
   });
 
