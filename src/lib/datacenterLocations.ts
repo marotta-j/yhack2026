@@ -37,20 +37,19 @@ export const PROVIDER_COLORS: Record<string, string> = {
 export const ALL_PROVIDERS = Object.keys(PROVIDER_COLORS);
 
 // ─── Model → provider mapping ────────────────────────────────────────────────
-//  Keys are matched as substrings of the lowercased model name (longest first).
+//  Derived from src/config/models.ts — do not edit here.
+//  Keys are exact model_ids; values are fulfillment_companies arrays.
 
-export const MODEL_PROVIDERS: Record<string, string[]> = {
-  // Gemini runs on Google Cloud
-  'gemini':  ['Google Cloud'],
-  // OpenAI trains / serves via Azure, Oracle, SoftBank, Nvidia
-  'gpt':     ['Azure', 'Oracle', 'SoftBank', 'Nvidia'],
-  // Grok runs on xAI's own Colossus cluster in Memphis, TN
-  'grok':    ['xAI'],
-  // Claude (all variants) runs on AWS + Google Cloud
-  'claude':  ['AWS', 'Google Cloud'],
-  // Microsoft Copilot runs entirely on Azure
-  'copilot': ['Azure'],
-};
+import { MODELS } from "@/config/models";
+
+export const MODEL_PROVIDERS: Record<string, string[]> = Object.fromEntries(
+  MODELS.map((m) => [m.model_id, m.fulfillment_companies]),
+);
+
+console.log(
+  "[datacenterLocations] MODEL_PROVIDERS derived from config:",
+  JSON.stringify(MODEL_PROVIDERS, null, 2),
+);
 
 // ─── Helper ──────────────────────────────────────────────────────────────────
 
@@ -289,17 +288,8 @@ export function resolveClosestDataCenter(
   userLat: number,
   userLng: number,
 ): DataCenter {
-  const lower = modelName.toLowerCase();
-
-  // Match longest key first to avoid "gpt" swallowing a more-specific key
-  const sortedKeys = Object.keys(MODEL_PROVIDERS).sort((a, b) => b.length - a.length);
-  let providers: string[] = [];
-  for (const key of sortedKeys) {
-    if (lower.includes(key)) {
-      providers = MODEL_PROVIDERS[key];
-      break;
-    }
-  }
+  // Exact model_id lookup (MODEL_PROVIDERS keys are now exact model ids from config)
+  const providers: string[] = MODEL_PROVIDERS[modelName] ?? [];
 
   const candidates = providers.length > 0
     ? ALL_DATA_CENTERS.filter((d) => providers.includes(d.provider))
@@ -318,6 +308,9 @@ export function resolveClosestDataCenter(
     }
   }
 
+  console.log(
+    `[datacenterLocations] resolveClosestDataCenter: model=${modelName}, providers=${JSON.stringify(providers)}, closest=${closest.id}`,
+  );
   return closest;
 }
 

@@ -11,14 +11,14 @@ export interface RoutedSubtask extends Subtask {
   datacenter_lat: number;
   datacenter_lng: number;
   grid_carbon_intensity: number;
-  eco_score: number; // model_intensity × grid_carbon_intensity
+  eco_score: number; // gCO₂ per token: (flops_per_token × 1e9) × KWH_PER_FLOP_H100 × grid_carbon_intensity
 }
 
 export interface SubtaskResult extends RoutedSubtask {
   response_text: string;
   prompt_tokens: number;
   completion_tokens: number;
-  carbon_cost: number; // (prompt + completion tokens) × model_intensity × grid_carbon_intensity
+  carbon_cost: number; // gCO₂: tokens × (flops_per_token × 1e9) × KWH_PER_FLOP_H100 × grid_carbon_intensity
 }
 
 export interface CarbonReport {

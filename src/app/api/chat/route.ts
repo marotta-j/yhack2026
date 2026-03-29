@@ -5,19 +5,10 @@ import Message from "@/models/Message";
 import { decomposePrompt } from "@/lib/decomposer";
 import { resolveClosestDataCenter } from "@/lib/datacenterLocations";
 import { getGridCarbonIntensity } from "@/lib/electricitymap";
-import { MODEL_INTENSITY } from "@/lib/carbon";
+import { selectModelForDifficulty } from "@/config/models";
 import { Subtask, RoutedSubtask } from "@/types";
 
 const LAVA_URL = "https://api.lava.so/v1/chat/completions";
-
-/** Maps difficulty 1–20 to a model string (equal 4-point buckets). */
-function selectModelForDifficulty(difficulty: number): string {
-  if (difficulty <= 4) return "gemini-2.0-flash";
-  if (difficulty <= 8) return "gpt-4o-mini";
-  if (difficulty <= 12) return "grok-3-fast";
-  if (difficulty <= 16) return "claude-sonnet-4-6";
-  return "claude-opus-4-6";
-}
 
 /**
  * POST /api/chat — Phase 1: score → decompose → route → return JSON.
@@ -102,15 +93,16 @@ export async function POST(req: Request) {
   // ── Route all subtasks ─────────────────────────────────────────────────────
   const routedSubtasks: RoutedSubtask[] = await Promise.all(
     subtasks.map(async (st: Subtask) => {
-      const model_id = selectModelForDifficulty(st.difficulty);
-      const dc = resolveClosestDataCenter(model_id, userLat, userLng);
+      const model = selectModelForDifficulty(st.difficulty);
+      const dc = resolveClosestDataCenter(model.model_id, userLat, userLng);
       const grid_carbon_intensity = await getGridCarbonIntensity(dc.lat, dc.lng);
-      const eco_score = (MODEL_INTENSITY[model_id] ?? 1.0) * grid_carbon_intensity;
-      console.log(`[chat] Routed subtask: type=${st.type} difficulty=${st.difficulty} → model=${model_id} dc=${dc.id}`);
+      // eco_score = gCO₂ per token at this datacenter (single-token carbon cost)
+      const eco_score = model.flops_per_token * 1e9 * 3.96e-15 * grid_carbon_intensity;
+      console.log(`[chat] Routed subtask: type=${st.type} difficulty=${st.difficulty} → model=${model.model_id} dc=${dc.id}`);
       return {
         ...st,
-        model_id,
-        lava_model_string: model_id,
+        model_id: model.model_id,
+        lava_model_string: model.lava_model_string,
         datacenter_id: dc.id,
         datacenter_lat: dc.lat,
         datacenter_lng: dc.lng,

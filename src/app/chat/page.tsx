@@ -156,7 +156,7 @@ export default function ChatPage() {
           ip: data.ip ?? "",
         });
       })
-      .catch(() => {});
+      .catch(() => { });
   }, []);
 
   // ── Sync effective position: override ?? real ─────────────────────────────
@@ -444,7 +444,7 @@ export default function ChatPage() {
                 });
               }
 
-            // ── delta event ──────────────────────────────────────────────
+              // ── delta event ──────────────────────────────────────────────
             } else if (event.type === "delta") {
               setMessages((prev) =>
                 prev.map((m) =>
@@ -454,7 +454,7 @@ export default function ChatPage() {
                 ),
               );
 
-            // ── subtask_result event ─────────────────────────────────────
+              // ── subtask_result event ─────────────────────────────────────
             } else if (event.type === "subtask_result") {
               setMessages((prev) =>
                 prev.map((m) =>
@@ -464,7 +464,7 @@ export default function ChatPage() {
                 ),
               );
 
-            // ── done event ───────────────────────────────────────────────
+              // ── done event ───────────────────────────────────────────────
             } else if (event.type === "done") {
               setMessages((prev) => [
                 ...prev.filter((m) => m._id !== streamingId),
@@ -507,7 +507,7 @@ export default function ChatPage() {
                 }, 1600);
               }
 
-            // ── error event ──────────────────────────────────────────────
+              // ── error event ──────────────────────────────────────────────
             } else if (event.type === "error") {
               setMessages((prev) => prev.filter((m) => m._id !== streamingId));
               if (outArcId) setArcs((prev) => prev.filter((a) => a.id !== outArcId));
@@ -771,9 +771,9 @@ export default function ChatPage() {
                                 {st.type}
                               </Badge>
                               <span className="text-[10px] text-muted-foreground">
-                                diff {st.difficulty}
+                                Difficulty {st.difficulty}
                               </span>
-                              <span className="text-[10px] text-muted-foreground">·</span>
+                              <span className="text-[10px] text-muted-foreground">{'·'}</span>
                               <span className="text-[10px] text-muted-foreground font-medium">
                                 {st.model_id}
                               </span>
