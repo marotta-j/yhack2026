@@ -10,6 +10,7 @@ import { getGridCarbonIntensity } from "@/lib/electricitymap";
 import { selectModelForDifficulty, FLOPS_PER_TOKEN } from "@/config/models";
 import { KWH_PER_FLOP_H100, calculateSubtaskCarbon } from "@/lib/carbon";
 import { Subtask, RoutedSubtask } from "@/types";
+import UserStats from "@/models/UserStats";
 
 const LAVA_URL = "https://api.lava.so/v1/chat/completions";
 
@@ -99,6 +100,13 @@ export async function POST(req: Request) {
       const scorerGridCarbon = await getGridCarbonIntensity(scorerDc.lat, scorerDc.lng, scorerDc.zone);
       difficultyPromptCarbon = calculateSubtaskCarbon(difficultyPromptTokens, "gpt-5-nano", scorerGridCarbon);
       console.log(`[chat] Scorer tokens: ${difficultyPromptTokens}, carbon: ${difficultyPromptCarbon.toExponential(3)} gCO₂`);
+
+      // Increment lifetime stats for the user-prompt overhead (scorer cost)
+      await UserStats.findOneAndUpdate(
+        { userId },
+        { $inc: { totalTokens: difficultyPromptTokens, totalCarbonCost: difficultyPromptCarbon } },
+        { upsert: true, new: true },
+      );
     }
   }
   console.log("[chat] Difficulty score:", difficultyScore);

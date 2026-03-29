@@ -14,8 +14,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Leaf Chat",
-  description: "AI chat powered by Lava Gateway",
+  title: "Leaf",
+  description: "Sustainable AI chat powered by Lava Gateway",
 };
 
 export default function RootLayout({

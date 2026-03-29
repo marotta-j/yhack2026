@@ -13,6 +13,7 @@ import {
   buildCarbonReport,
 } from "@/lib/carbon";
 import { RoutedSubtask, SubtaskResult } from "@/types";
+import UserStats from "@/models/UserStats";
 
 const LAVA_URL = "https://api.lava.so/v1/chat/completions";
 
@@ -332,6 +333,21 @@ export async function POST(req: Request) {
           ...allResults[0],
         });
 
+        // Increment lifetime user stats (survive conversation deletion)
+        await UserStats.findOneAndUpdate(
+          { userId },
+          {
+            $inc: {
+              totalMessages: 1,
+              totalTokens: usage.completion_tokens ?? 0,
+              totalCarbonCost: carbonReport.total_carbon,
+              totalCarbonSaved: carbonReport.delta,
+              totalNaiveBaseline: carbonReport.naive_baseline,
+            },
+          },
+          { upsert: true, new: true },
+        );
+
         const isFirstMessage = conversation.messageCount === 0;
         await Conversation.findByIdAndUpdate(conversationId, {
           $inc: { messageCount: 2, totalTokens: usage.total_tokens ?? 0 },
@@ -436,6 +452,21 @@ export async function POST(req: Request) {
           naiveBaseline: carbonReport.naive_baseline,
           carbonDelta: carbonReport.delta,
         });
+
+        // Increment lifetime user stats (survive conversation deletion)
+        await UserStats.findOneAndUpdate(
+          { userId },
+          {
+            $inc: {
+              totalMessages: 1,
+              totalTokens: totalSubtaskTokens + totalOrchTokens,
+              totalCarbonCost: carbonReport.total_carbon,
+              totalCarbonSaved: carbonReport.delta,
+              totalNaiveBaseline: carbonReport.naive_baseline,
+            },
+          },
+          { upsert: true, new: true },
+        );
 
         await SubtaskDocumentModel.insertMany(
           allResults.map((r) => ({
