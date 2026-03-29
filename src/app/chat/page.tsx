@@ -23,6 +23,7 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { Checkbox } from "@/components/ui/checkbox";
+import { MarkdownContent } from "@/components/MarkdownContent";
 import { RoutedSubtask } from "@/types";
 import { GlobeView, ArcData, MarkerData } from "@/components/Globe/GlobeView";
 import { LocationOverridePanel } from "@/components/LocationOverride/LocationOverridePanel";
@@ -833,13 +834,17 @@ export default function ChatPage() {
                   >
                     <div
                       className={cn(
-                        "rounded-2xl px-4 py-2.5 text-sm leading-relaxed whitespace-pre-wrap",
+                        "rounded-2xl px-4 py-2.5 text-sm",
                         msg.role === "user"
-                          ? "bg-primary text-primary-foreground rounded-tr-sm"
+                          ? "bg-primary text-primary-foreground rounded-tr-sm leading-relaxed whitespace-pre-wrap"
                           : "bg-muted text-foreground rounded-tl-sm",
                       )}
                     >
-                      {msg.content}
+                      {msg.role === "user" ? (
+                        msg.content
+                      ) : (
+                        <MarkdownContent content={msg.content} />
+                      )}
                       {msg.streaming && (
                         <span className="inline-block w-1.5 h-3.5 ml-0.5 bg-foreground/50 animate-pulse rounded-sm align-middle" />
                       )}
