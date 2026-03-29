@@ -11,13 +11,15 @@ import {
   PlusIcon,
   SendIcon,
   MessageSquareIcon,
-  BotIcon,
+  BarChart2Icon,
   UserIcon,
   LoaderIcon,
   ZapIcon,
   LayersIcon,
   ChevronDownIcon,
   ChevronUpIcon,
+  ChevronLeftIcon,
+  ChevronRightIcon,
   TrashIcon,
   LogOutIcon,
   LeafIcon,
@@ -118,6 +120,7 @@ for (const [model, providers] of Object.entries(MODEL_PROVIDERS)) {
 
 export default function ChatPage() {
   const session = useSession();
+  const [sidebarOpen, setSidebarOpen] = useState(true);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
@@ -543,8 +546,8 @@ export default function ChatPage() {
     isStreamingRef.current = true;
 
     const streamingId = `streaming-${Date.now()}`;
-    let outArcId: string | null = null;
-    let currentDatacenter = resolveDataCenter("gpt-4o");
+    let outArcIds: string[] = [];
+    let currentDatacenters: ReturnType<typeof resolveClosestDataCenter>[] = [];
 
     try {
       const res = await fetch("/api/chat/execute", {
@@ -606,38 +609,49 @@ export default function ChatPage() {
                 },
               ]);
 
-              // Globe: arc to the closest datacenter for this model
+              // Globe: draw simultaneous arcs to all subtask datacenters
               const loc = userLocationRef.current;
               if (loc) {
-                currentDatacenter = resolveClosestDataCenter(event.model, loc.lat, loc.lng);
-                outArcId = `arc-out-${Date.now()}`;
-                setArcs((prev) => [
-                  ...prev,
-                  {
-                    id: outArcId!,
+                const newArcs: ArcData[] = [];
+                const newDcs: ReturnType<typeof resolveClosestDataCenter>[] = [];
+                const now = Date.now();
+                for (const subtask of subtasks) {
+                  const dc = resolveClosestDataCenter(subtask.model_id, loc.lat, loc.lng);
+                  const arcId = `arc-out-${now}-${subtask.model_id}`;
+                  outArcIds.push(arcId);
+                  newDcs.push(dc);
+                  newArcs.push({
+                    id: arcId,
                     startLat: loc.lat,
                     startLng: loc.lng,
-                    endLat: currentDatacenter.lat,
-                    endLng: currentDatacenter.lng,
-                    color: currentDatacenter.color,
+                    endLat: dc.lat,
+                    endLng: dc.lng,
+                    color: dc.color,
                     animateTime: 1200,
-                  },
-                ]);
+                  });
+                }
+                currentDatacenters = newDcs;
+                setArcs((prev) => [...prev, ...newArcs]);
                 setMarkers((prev) => {
-                  const dcId = `dc-${currentDatacenter.id}`;
-                  if (prev.some((m) => m.id === dcId)) return prev;
-                  return [
-                    ...prev,
-                    {
-                      id: dcId,
-                      lat: currentDatacenter.lat,
-                      lng: currentDatacenter.lng,
-                      color: currentDatacenter.color,
-                      label: `${currentDatacenter.name} — ${currentDatacenter.provider}`,
-                      radius: 0.7,
-                      pulse: true,
-                    },
-                  ];
+                  let result = [...prev];
+                  for (const dc of newDcs) {
+                    const dcId = `dc-${dc.id}`;
+                    if (!result.some((m) => m.id === dcId)) {
+                      result = [
+                        ...result,
+                        {
+                          id: dcId,
+                          lat: dc.lat,
+                          lng: dc.lng,
+                          color: dc.color,
+                          label: `${dc.name} — ${dc.provider}`,
+                          radius: 0.7,
+                          pulse: true,
+                        },
+                      ];
+                    }
+                  }
+                  return result;
                 });
               }
 
@@ -679,39 +693,46 @@ export default function ChatPage() {
               fetchConversations();
 
               const loc = userLocationRef.current;
-              if (loc && outArcId) {
-                const staticArcId = `arc-static-${Date.now()}`;
-                const inArcId = `arc-in-${Date.now()}`;
-                setArcs((prev) => [
-                  ...prev.filter((a) => a.id !== outArcId),
-                  {
+              if (loc && outArcIds.length > 0) {
+                const now = Date.now();
+                const staticArcs: ArcData[] = [];
+                const inArcIds: string[] = [];
+                for (const dc of currentDatacenters) {
+                  const staticArcId = `arc-static-${now}-${dc.id}`;
+                  const inArcId = `arc-in-${now}-${dc.id}`;
+                  inArcIds.push(inArcId);
+                  staticArcs.push({
                     id: staticArcId,
                     startLat: loc.lat,
                     startLng: loc.lng,
-                    endLat: currentDatacenter.lat,
-                    endLng: currentDatacenter.lng,
-                    color: currentDatacenter.color,
+                    endLat: dc.lat,
+                    endLng: dc.lng,
+                    color: dc.color,
                     static: true,
-                  },
-                  {
+                  });
+                  staticArcs.push({
                     id: inArcId,
-                    startLat: currentDatacenter.lat,
-                    startLng: currentDatacenter.lng,
+                    startLat: dc.lat,
+                    startLng: dc.lng,
                     endLat: loc.lat,
                     endLng: loc.lng,
-                    color: currentDatacenter.color,
+                    color: dc.color,
                     animateTime: 900,
-                  },
+                  });
+                }
+                setArcs((prev) => [
+                  ...prev.filter((a) => !outArcIds.includes(a.id)),
+                  ...staticArcs,
                 ]);
                 setTimeout(() => {
-                  setArcs((prev) => prev.filter((a) => a.id !== inArcId));
+                  setArcs((prev) => prev.filter((a) => !inArcIds.includes(a.id)));
                 }, 1600);
               }
 
             // ── error event ──────────────────────────────────────────────
             } else if (event.type === "error") {
               setMessages((prev) => prev.filter((m) => m._id !== streamingId));
-              if (outArcId) setArcs((prev) => prev.filter((a) => a.id !== outArcId));
+              if (outArcIds.length > 0) setArcs((prev) => prev.filter((a) => !outArcIds.includes(a.id)));
               alert(event.error ?? "Something went wrong");
             }
           } catch {
@@ -766,62 +787,87 @@ export default function ChatPage() {
     <div className="flex h-screen bg-background text-foreground overflow-hidden">
 
       {/* ── Sidebar ──────────────────────────────────────────────────────────── */}
-      <aside className="w-64 flex flex-col border-r border-border bg-card shrink-0">
-        <div className="flex items-center justify-between p-4 border-b border-border">
-          <div className="flex items-center gap-2">
-            <BotIcon className="w-5 h-5 text-primary" />
-            <span className="font-semibold text-sm">Leaf Chat</span>
-          </div>
-        </div>
-
-        <div className="p-3">
-          <Button
-            variant="outline"
-            className="w-full justify-start gap-2"
-            onClick={handleNewChat}
-          >
-            <PlusIcon className="w-4 h-4" />
-            New Chat
-          </Button>
-        </div>
-
-        <div className="flex-1 min-h-0 overflow-y-auto px-2">
-          <div className="space-y-1 pb-2">
-            {conversations.map((conv) => (
-              <div
-                key={conv._id}
-                onClick={() => { setConfirming(false); setPendingExecution(null); setActiveId(conv._id); }}
-                className={cn(
-                  "group relative flex items-center rounded-md text-sm transition-colors",
-                  "hover:bg-accent hover:text-accent-foreground",
-                  activeId === conv._id
-                    ? "bg-accent text-accent-foreground"
-                    : "text-muted-foreground",
-                )}
-              >
-                <button
-                  onClick={() => setActiveId(conv._id)}
-                  className="flex-1 text-left px-3 py-2 min-w-0"
-                >
-                  <div className="flex items-center gap-2">
-                    <MessageSquareIcon className="w-3.5 h-3.5 shrink-0" />
-                    <span className="truncate">{conv.title}</span>
-                  </div>
-                  <p className="text-xs text-muted-foreground mt-0.5 pl-5">
-                    {conv.messageCount} messages
-                  </p>
-                </button>
-                <button
-                  onClick={(e) => deleteConversation(conv._id, e)}
-                  className="shrink-0 p-1.5 mr-1 rounded opacity-0 group-hover:opacity-100 hover:text-destructive transition-opacity"
-                  aria-label="Delete conversation"
-                >
-                  <TrashIcon className="w-3.5 h-3.5" />
-                </button>
+      <aside className={cn("flex flex-col border-r border-zinc-800 bg-zinc-950 shrink-0 transition-[width] duration-200", sidebarOpen ? "w-64" : "w-10")}>
+        {/* Header */}
+        <div className="flex items-center justify-between p-2.5 border-b border-zinc-800 shrink-0 min-h-[57px]">
+          {sidebarOpen ? (
+            <>
+              <div className="flex items-center gap-2 pl-1.5">
+                <LeafIcon className="w-5 h-5 text-primary" />
+                <span className="font-semibold text-sm">Leaf</span>
               </div>
-            ))}
-          </div>
+              <button
+                onClick={() => setSidebarOpen(false)}
+                className="rounded p-1 hover:bg-zinc-800 transition-colors text-zinc-400 hover:text-white"
+                aria-label="Collapse sidebar"
+              >
+                <ChevronLeftIcon className="w-4 h-4" />
+              </button>
+            </>
+          ) : (
+            <div className="flex flex-col items-center gap-1 w-full py-1">
+              <LeafIcon className="w-5 h-5 text-primary" />
+              <button
+                onClick={() => setSidebarOpen(true)}
+                className="rounded p-0.5 hover:bg-zinc-800 transition-colors text-zinc-400 hover:text-white"
+                aria-label="Expand sidebar"
+              >
+                <ChevronRightIcon className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          )}
         </div>
+
+        {sidebarOpen ? (
+          <>
+            <div className="p-3">
+              <Button
+                variant="outline"
+                className="w-full justify-start gap-2"
+                onClick={handleNewChat}
+              >
+                <PlusIcon className="w-4 h-4" />
+                New Chat
+              </Button>
+            </div>
+
+            <div className="flex-1 min-h-0 overflow-y-auto px-2">
+              <div className="space-y-1 pb-2">
+                {conversations.map((conv) => (
+                  <div
+                    key={conv._id}
+                    onClick={() => { setConfirming(false); setPendingExecution(null); setActiveId(conv._id); }}
+                    className={cn(
+                      "group relative flex items-center rounded-md text-sm transition-colors",
+                      "hover:bg-zinc-800 hover:text-white",
+                      activeId === conv._id
+                        ? "bg-zinc-800 text-white"
+                        : "text-zinc-400",
+                    )}
+                  >
+                    <button
+                      onClick={() => setActiveId(conv._id)}
+                      className="flex-1 text-left px-3 py-2 min-w-0"
+                    >
+                      <div className="flex items-center gap-2">
+                        <MessageSquareIcon className="w-3.5 h-3.5 shrink-0" />
+                        <span className="truncate">{conv.title}</span>
+                      </div>
+                      <p className="text-xs text-muted-foreground mt-0.5 pl-5">
+                        {conv.messageCount} messages
+                      </p>
+                    </button>
+                    <button
+                      onClick={(e) => deleteConversation(conv._id, e)}
+                      className="shrink-0 p-1.5 mr-1 rounded opacity-0 group-hover:opacity-100 hover:text-destructive transition-opacity"
+                      aria-label="Delete conversation"
+                    >
+                      <TrashIcon className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
 
         {/* ── Carbon stat widget ───────────────────────────────────────────── */}
         <div className="mx-2 mb-2 rounded-xl bg-muted/60 border border-border overflow-hidden">
@@ -873,10 +919,56 @@ export default function ChatPage() {
             Sign Out
           </Button>
         </div>
+            <div className="border-t border-zinc-800" />
+            <div className="p-3 flex flex-col gap-1">
+              <Link href="/stats">
+                <Button variant="ghost" className="w-full justify-start gap-2 text-zinc-400 hover:text-white hover:bg-zinc-800">
+                  <BarChart2Icon className="w-4 h-4" />
+                  Statistics
+                </Button>
+              </Link>
+              <Button
+                variant="ghost"
+                className="w-full justify-start gap-2 text-zinc-400 hover:text-white hover:bg-zinc-800"
+                onClick={() => signOut({ callbackUrl: "/login" })}
+              >
+                <LogOutIcon className="w-4 h-4" />
+                Sign Out
+              </Button>
+            </div>
+          </>
+        ) : (
+          /* Collapsed: icon-only controls */
+          <div className="flex flex-col items-center gap-1 py-2 flex-1">
+            <button
+              onClick={handleNewChat}
+              className="rounded p-1.5 hover:bg-zinc-800 transition-colors text-zinc-400 hover:text-white"
+              aria-label="New chat"
+            >
+              <PlusIcon className="w-4 h-4" />
+            </button>
+            <div className="flex-1" />
+            <Link href="/stats">
+              <button
+                className="rounded p-1.5 hover:bg-zinc-800 transition-colors text-zinc-400 hover:text-white"
+                aria-label="Statistics"
+              >
+                <BarChart2Icon className="w-4 h-4" />
+              </button>
+            </Link>
+            <button
+              onClick={() => signOut({ callbackUrl: "/login" })}
+              className="rounded p-1.5 hover:bg-zinc-800 transition-colors text-zinc-400 hover:text-white"
+              aria-label="Sign out"
+            >
+              <LogOutIcon className="w-4 h-4" />
+            </button>
+          </div>
+        )}
       </aside>
 
       {/* ── Chat panel ───────────────────────────────────────────────────────── */}
-      <main className="flex flex-col shrink-0 border-r border-border" style={{ width: chatWidth }}>
+      <main className="flex flex-col shrink-0 border-r border-zinc-800 bg-zinc-900" style={{ width: chatWidth }}>
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-border shrink-0">
           <div>
@@ -898,7 +990,7 @@ export default function ChatPage() {
           <div className="max-w-3xl mx-auto py-6 space-y-6">
             {!activeId && messages.length === 0 && !loading && (
               <div className="flex flex-col items-center justify-center h-64 text-center gap-3">
-                <BotIcon className="w-12 h-12 text-muted-foreground/40" />
+                <LeafIcon className="w-12 h-12 text-muted-foreground/40" />
                 <p className="text-muted-foreground text-sm">
                   Start a conversation. Ask anything.
                 </p>
@@ -948,7 +1040,7 @@ export default function ChatPage() {
                       )}
                     >
                       {msg.role === "assistant" ? (
-                        <BotIcon className="w-4 h-4" />
+                        <LeafIcon className="w-4 h-4" />
                       ) : (
                         <UserIcon className="w-4 h-4" />
                       )}
@@ -975,7 +1067,11 @@ export default function ChatPage() {
                         <MarkdownContent content={msg.content} />
                       )}
                       {msg.streaming && (
-                        <span className="inline-block w-1.5 h-3.5 ml-0.5 bg-foreground/50 animate-pulse rounded-sm align-middle" />
+                        <span className="inline-flex gap-0.5 ml-1.5 align-middle items-center">
+                          <span className="w-1 h-1 rounded-full bg-foreground/50 animate-bounce [animation-delay:0ms]" />
+                          <span className="w-1 h-1 rounded-full bg-foreground/50 animate-bounce [animation-delay:150ms]" />
+                          <span className="w-1 h-1 rounded-full bg-foreground/50 animate-bounce [animation-delay:300ms]" />
+                        </span>
                       )}
                       {(() => {
                         if (msg.role !== "assistant") return null;
@@ -1046,7 +1142,7 @@ export default function ChatPage() {
               <div className="flex gap-3">
                 <Avatar className="w-8 h-8 shrink-0 mt-0.5">
                   <AvatarFallback className="bg-primary text-primary-foreground text-xs">
-                    <BotIcon className="w-4 h-4" />
+                    <LeafIcon className="w-4 h-4" />
                   </AvatarFallback>
                 </Avatar>
                 <div className="flex flex-col gap-1 max-w-[85%] items-start">
@@ -1083,7 +1179,7 @@ export default function ChatPage() {
                                 {st.type}
                               </Badge>
                               <span className="text-[10px] text-muted-foreground">
-                                diff {st.difficulty}
+                                difficulty {st.difficulty}
                               </span>
                               <span className="text-[10px] text-muted-foreground">·</span>
                               <span className="text-[10px] text-muted-foreground font-medium">
@@ -1115,7 +1211,7 @@ export default function ChatPage() {
               <div className="flex gap-3">
                 <Avatar className="w-8 h-8 shrink-0 mt-0.5">
                   <AvatarFallback className="bg-primary text-primary-foreground text-xs">
-                    <BotIcon className="w-4 h-4" />
+                    <LeafIcon className="w-4 h-4" />
                   </AvatarFallback>
                 </Avatar>
                 <div className="bg-muted rounded-2xl rounded-tl-sm px-4 py-3">
@@ -1297,7 +1393,7 @@ export default function ChatPage() {
                     />
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center justify-between gap-1">
-                        <span className="text-xs text-white font-medium truncate">
+                        <span className="text-xs text-white font-medium truncate" title={provider}>
                           {provider}
                         </span>
                         {carbonMode ? (
@@ -1323,7 +1419,7 @@ export default function ChatPage() {
                         )}
                       </div>
                       {models.length > 0 && (
-                        <p className="text-[10px] text-white/35 truncate">
+                        <p className="text-[10px] text-white/35 truncate" title={models.join(", ")}>
                           {models.join(", ")}
                         </p>
                       )}

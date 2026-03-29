@@ -319,7 +319,7 @@ export async function POST(req: Request) {
           content: fullContent,
           promptTokens: usage.prompt_tokens ?? 0,
           completionTokens: usage.completion_tokens ?? 0,
-          totalTokens: usage.total_tokens ?? 0,
+          totalTokens: usage.completion_tokens ?? 0,
           carbonCost: carbonReport.total_carbon,
           naiveBaseline: carbonReport.naive_baseline,
           carbonDelta: carbonReport.delta,
