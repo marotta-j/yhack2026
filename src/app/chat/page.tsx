@@ -11,7 +11,6 @@ import {
   PlusIcon,
   SendIcon,
   MessageSquareIcon,
-  BarChart2Icon,
   UserIcon,
   LoaderIcon,
   ZapIcon,
@@ -919,23 +918,6 @@ export default function ChatPage() {
             Sign Out
           </Button>
         </div>
-            <div className="border-t border-zinc-800" />
-            <div className="p-3 flex flex-col gap-1">
-              <Link href="/stats">
-                <Button variant="ghost" className="w-full justify-start gap-2 text-zinc-400 hover:text-white hover:bg-zinc-800">
-                  <BarChart2Icon className="w-4 h-4" />
-                  Statistics
-                </Button>
-              </Link>
-              <Button
-                variant="ghost"
-                className="w-full justify-start gap-2 text-zinc-400 hover:text-white hover:bg-zinc-800"
-                onClick={() => signOut({ callbackUrl: "/login" })}
-              >
-                <LogOutIcon className="w-4 h-4" />
-                Sign Out
-              </Button>
-            </div>
           </>
         ) : (
           /* Collapsed: icon-only controls */
@@ -948,14 +930,6 @@ export default function ChatPage() {
               <PlusIcon className="w-4 h-4" />
             </button>
             <div className="flex-1" />
-            <Link href="/stats">
-              <button
-                className="rounded p-1.5 hover:bg-zinc-800 transition-colors text-zinc-400 hover:text-white"
-                aria-label="Statistics"
-              >
-                <BarChart2Icon className="w-4 h-4" />
-              </button>
-            </Link>
             <button
               onClick={() => signOut({ callbackUrl: "/login" })}
               className="rounded p-1.5 hover:bg-zinc-800 transition-colors text-zinc-400 hover:text-white"
