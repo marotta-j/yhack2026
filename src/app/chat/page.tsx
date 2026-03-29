@@ -173,6 +173,9 @@ export default function ChatPage() {
   const [carbonMode, setCarbonMode] = useState(false);
   const [carbonLoading, setCarbonLoading] = useState(false);
 
+  // Quick stats for sidebar widget
+  const [quickStats, setQuickStats] = useState<{ totalCarbonCost: number; totalCarbonSaved: number } | null>(null);
+
   /** True geolocation from /api/geolocate (your IP). */
   const [realLocation, setRealLocation] = useState<ResolvedGeo | null>(null);
   /** Optional spoof — persisted in localStorage, drives pin + routing. */
@@ -182,6 +185,19 @@ export default function ChatPage() {
   useEffect(() => {
     fetchConversations();
   }, []);
+
+  // ── Load quick stats for sidebar widget ────────────────────────────────────
+  useEffect(() => {
+    fetch("/api/stats")
+      .then((r) => r.json())
+      .then((data) => {
+        setQuickStats({
+          totalCarbonCost: data.totalCarbonCost ?? 0,
+          totalCarbonSaved: data.totalCarbonSaved ?? 0,
+        });
+      })
+      .catch(() => {});
+  }, [conversations]); // refresh whenever conversations change
 
   // ── Restore saved location override (client only) ──────────────────────────
   useEffect(() => {
@@ -853,6 +869,56 @@ export default function ChatPage() {
               </div>
             </div>
 
+        {/* ── Carbon stat widget ───────────────────────────────────────────── */}
+        <div className="mx-2 mb-2 rounded-xl bg-muted/60 border border-border overflow-hidden">
+          <div className="flex items-center justify-between px-3 pt-2.5 pb-1">
+            <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+              Your Impact
+            </span>
+            <Link
+              href="/stats"
+              className="text-[10px] text-primary hover:text-primary/80 underline underline-offset-2 transition-colors"
+            >
+              View all stats →
+            </Link>
+          </div>
+          <div className="grid grid-cols-2 divide-x divide-border border-t border-border">
+            <div className="flex flex-col items-center justify-center py-2.5 px-2 gap-0.5">
+              <span className="text-[10px] text-muted-foreground">CO₂ Used</span>
+              <span className="text-sm font-semibold tabular-nums text-foreground">
+                {quickStats != null ? formatCarbon(quickStats.totalCarbonCost) : "—"}
+              </span>
+            </div>
+            <div className="flex flex-col items-center justify-center py-2.5 px-2 gap-0.5">
+              <span className="text-[10px] text-muted-foreground">CO₂ Saved</span>
+              <span className="text-sm font-semibold tabular-nums text-emerald-500">
+                {quickStats != null ? formatCarbon(quickStats.totalCarbonSaved) : "—"}
+              </span>
+            </div>
+          </div>
+          {quickStats != null && quickStats.totalCarbonSaved > 0 && (quickStats.totalCarbonCost + quickStats.totalCarbonSaved) > 0 && (
+            <div className="px-3 py-1.5 border-t border-border">
+              <div className="flex items-center gap-1.5">
+                <LeafIcon className="w-3 h-3 text-emerald-500 shrink-0" />
+                <span className="text-[10px] text-emerald-500">
+                  {Math.round((quickStats.totalCarbonSaved / (quickStats.totalCarbonCost + quickStats.totalCarbonSaved)) * 100)}% greener than baseline
+                </span>
+              </div>
+            </div>
+          )}
+        </div>
+
+        <Separator />
+        <div className="p-3 flex flex-col gap-1">
+          <Button
+            variant="ghost"
+            className="w-full justify-start gap-2 text-muted-foreground"
+            onClick={() => signOut({ callbackUrl: "/login" })}
+          >
+            <LogOutIcon className="w-4 h-4" />
+            Sign Out
+          </Button>
+        </div>
             <div className="border-t border-zinc-800" />
             <div className="p-3 flex flex-col gap-1">
               <Link href="/stats">
