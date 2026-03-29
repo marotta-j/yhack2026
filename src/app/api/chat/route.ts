@@ -2,18 +2,46 @@ import { NextResponse } from "next/server";
 import { connectToDatabase } from "@/lib/mongodb";
 import Conversation from "@/models/Conversation";
 import Message from "@/models/Message";
+import { decomposePrompt } from "@/lib/decomposer";
+import { resolveClosestDataCenter } from "@/lib/datacenterLocations";
+import { getGridCarbonIntensity } from "@/lib/electricitymap";
+import { MODEL_INTENSITY } from "@/lib/carbon";
+import { Subtask, RoutedSubtask } from "@/types";
 
+const LAVA_URL = "https://api.lava.so/v1/chat/completions";
+
+/** Maps difficulty 1–20 to a model string (equal 4-point buckets). */
+function selectModelForDifficulty(difficulty: number): string {
+  if (difficulty <= 4) return "gemini-2.0-flash";
+  if (difficulty <= 8) return "gpt-4o-mini";
+  if (difficulty <= 12) return "grok-3-fast";
+  if (difficulty <= 16) return "claude-sonnet-4-6";
+  return "claude-opus-4-6";
+}
+
+/**
+ * POST /api/chat — Phase 1: score → decompose → route → return JSON.
+ *
+ * Returns:
+ *   { conversationId, userMessage, difficultyScore, decomposer_tokens, was_decomposed, subtasks }
+ *
+ * The client either shows a confirmation UI (was_decomposed && subtasks.length > 1)
+ * or immediately POSTs to /api/chat/execute with the full subtask list.
+ */
 export async function POST(req: Request) {
-  const { conversationId, content } = await req.json();
+  const {
+    conversationId,
+    content,
+    userLat = 39.05,
+    userLng = -77.46,
+  } = await req.json();
 
   if (!content?.trim()) {
-    return NextResponse.json(
-      { error: "Message content is required" },
-      { status: 400 },
-    );
+    return NextResponse.json({ error: "Message content is required" }, { status: 400 });
   }
 
   await connectToDatabase();
+  console.log("[chat] POST received:", { conversationId, content: content?.slice(0, 80), userLat, userLng });
 
   // Get or create conversation
   let conversation = conversationId
@@ -22,6 +50,9 @@ export async function POST(req: Request) {
 
   if (!conversation) {
     conversation = await Conversation.create({});
+    console.log("[chat] Created new conversation:", conversation._id.toString());
+  } else {
+    console.log("[chat] Found existing conversation:", conversation._id.toString());
   }
 
   // Save user message
@@ -30,31 +61,20 @@ export async function POST(req: Request) {
     role: "user",
     content: content.trim(),
   });
+  console.log("[chat] Saved user message:", userMessage._id.toString());
 
-  // Fetch conversation history for context
-  const history = await Message.find({ conversationId: conversation._id })
-    .sort({ createdAt: 1 })
-    .select("role content");
+  const forwardToken = process.env.LAVA_SECRET_KEY!;
 
-  const messages = history.map((m) => ({ role: m.role, content: m.content }));
-
-  const forwardToken = process.env.LAVA_SECRET_KEY;
-  const lavaUrl = `https://api.lava.so/v1/chat/completions`;
-
-  // Score difficulty 1-10
-  const difficultyRes = await fetch(lavaUrl, {
+  // ── Score difficulty 1–20 ──────────────────────────────────────────────────
+  const difficultyRes = await fetch(LAVA_URL, {
     method: "POST",
-    headers: {
-      Authorization: `Bearer ${forwardToken}`,
-      "Content-Type": "application/json",
-    },
+    headers: { Authorization: `Bearer ${forwardToken}`, "Content-Type": "application/json" },
     body: JSON.stringify({
       model: "gpt-5-nano",
       messages: [
         {
           role: "system",
-          content:
-            'Rate the difficulty of answering the user message on a scale of 1-10. Return only JSON: {"score": <integer>}.',
+          content: 'Rate the difficulty of answering the user message on a scale of 1-20. Return only JSON: {"score": <integer>}.',
         },
         { role: "user", content: content.trim() },
       ],
@@ -62,82 +82,32 @@ export async function POST(req: Request) {
     }),
   });
 
-  let difficultyScore = 5;
+  let difficultyScore = 10;
   if (difficultyRes.ok) {
     const difficultyData = await difficultyRes.json();
     try {
-      const parsed = JSON.parse(
-        difficultyData.choices?.[0]?.message?.content ?? "{}",
-      );
-      difficultyScore = Math.min(
-        10,
-        Math.max(1, parseInt(parsed.score, 10) || 5),
-      );
-    } catch {
-      // keep default
-    }
+      const parsed = JSON.parse(difficultyData.choices?.[0]?.message?.content ?? "{}");
+      difficultyScore = Math.min(20, Math.max(1, parseInt(parsed.score, 10) || 10));
+    } catch {}
   }
+  console.log("[chat] Difficulty score:", difficultyScore);
 
-  // Select model based on difficulty score (5 tiers, eco-friendly routing)
-  // Score 1-2  → Gemini 2.0 Flash   (Google)     — trivial tasks
-  // Score 3-4  → GPT-4o Mini        (OpenAI)     — simple tasks
-  // Score 5-6  → Grok 3 Fast        (xAI)        — moderate tasks
-  // Score 7-8  → Claude Sonnet 4.6  (Anthropic)  — complex tasks
-  // Score 9-10 → Claude Opus 4.6    (Anthropic)  — hardest tasks
-  const selectedModel =
-    difficultyScore <= 2
-      ? "gemini-2.0-flash"
-      : difficultyScore <= 4
-        ? "gpt-4o-mini"
-        : difficultyScore <= 6
-          ? "grok-3-fast"
-          : difficultyScore <= 8
-            ? "claude-sonnet-4-6"
-            : "claude-opus-4-6";
+  // ── Decompose ──────────────────────────────────────────────────────────────
+  const { subtasks, decomposer_tokens, was_decomposed } = await decomposePrompt(
+    content.trim(),
+    difficultyScore,
+  );
+  console.log("[chat] Decomposition: was_decomposed=", was_decomposed, "count=", subtasks.length);
 
-  console.log(selectedModel, "selected based on difficulty score", difficultyScore);
-
-  const enc = new TextEncoder();
-  const conversationRef = conversation;
-
-  const stream = new ReadableStream({
-    async start(controller) {
-      // Immediately announce the selected model before the LLM call
-      controller.enqueue(
-        enc.encode(
-          JSON.stringify({
-            type: "model",
-            model: selectedModel,
-            difficultyScore,
-            conversationId: conversationRef._id.toString(),
-            userMessage,
-          }) + "\n",
-        ),
-      );
-
-      // Call LLM with streaming enabled
-      const openaiRes = await fetch(lavaUrl, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${forwardToken}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          model: selectedModel,
-          messages,
-          stream: true,
-        }),
-      });
-
-      if (!openaiRes.ok) {
-        const err = await openaiRes.text();
-        controller.enqueue(
-          enc.encode(
-            JSON.stringify({ type: "error", error: `Lava/OpenAI error: ${err}` }) + "\n",
-          ),
-        );
-        controller.close();
-        return;
+  // ── Route all subtasks ─────────────────────────────────────────────────────
+  const routedSubtasks: RoutedSubtask[] = await Promise.all(
+    subtasks.map(async (st: Subtask) => {
+      // SEARCH subtasks go directly to a search model; all others use difficulty routing
+      let model_id: string;
+      if (st.type === "SEARCH") {
+        model_id = st.search_type === "exa" ? "exa-search" : "serper-search";
+      } else {
+        model_id = selectModelForDifficulty(st.difficulty);
       }
 
       const reader = openaiRes.body!.getReader();
