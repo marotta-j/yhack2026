@@ -222,6 +222,7 @@ export default function ChatPage() {
     subtasks: RoutedSubtask[];
     conversationId: string;
     decomposer_tokens: { prompt_tokens: number; completion_tokens: number };
+    difficulty_scorer_tokens: { prompt_tokens: number; completion_tokens: number };
     was_decomposed: boolean;
     originalMessage: string;
   } | null>(null);
@@ -596,12 +597,12 @@ export default function ChatPage() {
         isStreamingRef.current = false;
         setLoading(false);
         setActiveDifficultyScore(difficultyScore ?? 0);
-        setPendingExecution({ subtasks, conversationId, decomposer_tokens, was_decomposed, originalMessage: text });
+        setPendingExecution({ subtasks, conversationId, decomposer_tokens, difficulty_scorer_tokens: { prompt_tokens: difficulty_prompt_tokens ?? 0, completion_tokens: 0 }, was_decomposed, originalMessage: text });
         setSelectedSubtaskIndices(new Set(subtasks.map((_: RoutedSubtask, i: number) => i)));
         setConfirming(true);
       } else {
         // Single subtask — skip confirmation, fire Phase 2 immediately
-        await executeSubtasks(subtasks, conversationId, decomposer_tokens, was_decomposed, text);
+        await executeSubtasks(subtasks, conversationId, decomposer_tokens, { prompt_tokens: difficulty_prompt_tokens ?? 0, completion_tokens: 0 }, was_decomposed, text);
       }
     } catch {
       setMessages((prev) => prev.filter((m) => m._id !== tempId));
@@ -617,6 +618,7 @@ export default function ChatPage() {
     subtasks: RoutedSubtask[],
     conversationId: string,
     decomposer_tokens: { prompt_tokens: number; completion_tokens: number },
+    difficulty_scorer_tokens: { prompt_tokens: number; completion_tokens: number },
     was_decomposed: boolean,
     originalMessage: string,
   ) {
@@ -634,7 +636,11 @@ export default function ChatPage() {
     const streamingId = `streaming-${Date.now()}`;
     // Maps subtask index → outbound arc ID so each subtask_result can convert its own arc
     let outArcIdsByIndex: Map<number, string> = new Map();
+    // Cancelable timers for staggered arc creation (cancel if subtask completes before timer fires)
+    let arcCreationTimers: Map<number, ReturnType<typeof setTimeout>> = new Map();
     let currentDatacenters: Map<number, ReturnType<typeof resolveClosestDataCenter>> = new Map();
+    // Counter for staggering arc creation so same-batch subtasks don't fire simultaneously
+    let arcStaggerCount = 0;
 
     try {
       const res = await fetch("/api/chat/execute", {
@@ -647,6 +653,7 @@ export default function ChatPage() {
           userLat: userLocationRef.current?.lat,
           userLng: userLocationRef.current?.lng,
           decomposer_tokens,
+          difficulty_scorer_tokens,
           was_decomposed,
         }),
       });
@@ -726,44 +733,52 @@ export default function ChatPage() {
                 return next;
               });
 
-              // Globe: create animated outbound arc for this subtask
+              // Globe: create animated outbound arc for this subtask (staggered)
               const loc = userLocationRef.current;
               const dc = currentDatacenters.get(idx);
               if (loc && dc) {
                 const arcId = `arc-out-${Date.now()}-${idx}`;
+                // Register arcId immediately so subtask_result can find it even if timer hasn't fired
                 outArcIdsByIndex.set(idx, arcId);
                 const color = subtaskColor(idx);
-                setArcs((prev) => [
-                  ...prev,
-                  {
-                    id: arcId,
-                    startLat: loc.lat,
-                    startLng: loc.lng,
-                    endLat: dc.lat,
-                    endLng: dc.lng,
-                    color,
-                    altitude: 0.35,
-                    animateTime: 1200,
-                  },
-                ]);
-                setMarkers((prev) => {
-                  const dcId = `dc-${dc.id}`;
-                  if (prev.some((m) => m.id === dcId)) {
-                    return prev.map((m) => m.id === dcId ? { ...m, pulse: true } : m);
-                  }
-                  return [
+                const staggerDelay = arcStaggerCount * 250;
+                arcStaggerCount++;
+                const timer = setTimeout(() => {
+                  arcCreationTimers.delete(idx);
+                  // Skip if subtask already completed before timer fired
+                  if (!outArcIdsByIndex.has(idx)) return;
+                  setArcs((prev) => [
                     ...prev,
                     {
-                      id: dcId,
-                      lat: dc.lat,
-                      lng: dc.lng,
-                      color: dc.color,
-                      label: `${dc.name} — ${dc.provider}`,
-                      radius: 0.7,
-                      pulse: true,
+                      id: arcId,
+                      startLat: loc.lat,
+                      startLng: loc.lng,
+                      endLat: dc.lat,
+                      endLng: dc.lng,
+                      color,
+                      animateTime: 1200,
                     },
-                  ];
-                });
+                  ]);
+                  setMarkers((prev) => {
+                    const dcId = `dc-${dc.id}`;
+                    if (prev.some((m) => m.id === dcId)) {
+                      return prev.map((m) => m.id === dcId ? { ...m, pulse: true } : m);
+                    }
+                    return [
+                      ...prev,
+                      {
+                        id: dcId,
+                        lat: dc.lat,
+                        lng: dc.lng,
+                        color: dc.color,
+                        label: `${dc.name} — ${dc.provider}`,
+                        radius: 0.7,
+                        pulse: true,
+                      },
+                    ];
+                  });
+                }, staggerDelay);
+                arcCreationTimers.set(idx, timer);
               }
 
             // ── subtask_result event ─────────────────────────────────────
@@ -783,47 +798,35 @@ export default function ChatPage() {
                 next[idx] = event.subtask;
                 return next;
               });
-              // Convert this subtask's outbound arc to static + brief inbound
+              // Convert this subtask's outbound arc to a persistent static arc
               const loc = userLocationRef.current;
               const dc = currentDatacenters.get(idx);
               const outArcId = outArcIdsByIndex.get(idx);
+              // Cancel the stagger timer if the subtask completed before it fired
+              const pendingTimer = arcCreationTimers.get(idx);
+              if (pendingTimer !== undefined) {
+                clearTimeout(pendingTimer);
+                arcCreationTimers.delete(idx);
+              }
               if (loc && dc) {
                 setMarkers((prev) =>
                   prev.map((m) => m.id === `dc-${dc.id}` ? { ...m, pulse: false } : m),
                 );
-                if (outArcId) {
-                  const now = Date.now();
-                  const staticArcId = `arc-static-${now}-${dc.id}-${idx}`;
-                  const inArcId = `arc-in-${now}-${dc.id}-${idx}`;
-                  const color = subtaskColor(idx);
-                  setArcs((prev) => [
-                    ...prev.filter((a) => a.id !== outArcId),
-                    {
-                      id: staticArcId,
-                      startLat: loc.lat,
-                      startLng: loc.lng,
-                      endLat: dc.lat,
-                      endLng: dc.lng,
-                      color: dc.color,
-                      altitude: 0.18,
-                      static: true,
-                    },
-                    {
-                      id: inArcId,
-                      startLat: dc.lat,
-                      startLng: dc.lng,
-                      endLat: loc.lat,
-                      endLng: loc.lng,
-                      color,
-                      altitude: 0.25,
-                      animateTime: 900,
-                    },
-                  ]);
-                  outArcIdsByIndex.delete(idx);
-                  setTimeout(() => {
-                    setArcs((prev) => prev.filter((a) => a.id !== inArcId));
-                  }, 1600);
-                }
+                const staticArcId = `arc-static-${Date.now()}-${dc.id}-${idx}`;
+                const color = subtaskColor(idx);
+                setArcs((prev) => [
+                  ...prev.filter((a) => a.id !== outArcId),
+                  {
+                    id: staticArcId,
+                    startLat: loc.lat,
+                    startLng: loc.lng,
+                    endLat: dc.lat,
+                    endLng: dc.lng,
+                    color,
+                    static: true,
+                  },
+                ]);
+                outArcIdsByIndex.delete(idx);
               }
               setMessages((prev) =>
                 prev.map((m) =>
@@ -889,6 +892,7 @@ export default function ChatPage() {
       selected,
       pendingExecution.conversationId,
       pendingExecution.decomposer_tokens,
+      pendingExecution.difficulty_scorer_tokens,
       pendingExecution.was_decomposed,
       pendingExecution.originalMessage,
     );

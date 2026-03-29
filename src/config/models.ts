@@ -39,6 +39,11 @@ export interface ModelConfig {
    * Empty array for search models → falls back to geographically closest DC.
    */
   fulfillment_companies: string[];
+  /**
+   * When true, this model is used as the naive carbon baseline.
+   * Exactly one model should have this flag set.
+   */
+  isBaseline?: boolean;
 }
 
 export const MODELS: ModelConfig[] = [
@@ -165,6 +170,7 @@ export const MODELS: ModelConfig[] = [
     difficulty_max: 14,
     flops_per_token: 140,       // dense ~70B params, 2×70 = 140 GFLOPs
     fulfillment_companies: ["AWS", "Google Cloud"],
+    isBaseline: true,
   },
   {
     model_id: "grok-3",
