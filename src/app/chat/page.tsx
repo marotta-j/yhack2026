@@ -21,6 +21,8 @@ import {
   ChevronUpIcon,
 } from "lucide-react";
 import Link from "next/link";
+import { Checkbox } from "@/components/ui/checkbox";
+import { RoutedSubtask } from "@/types";
 import { GlobeView, ArcData, MarkerData } from "@/components/Globe/GlobeView";
 import { LocationOverridePanel } from "@/components/LocationOverride/LocationOverridePanel";
 import {
@@ -100,6 +102,17 @@ export default function ChatPage() {
   const [selectedModel, setSelectedModel] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const isStreamingRef = useRef(false);
+
+  // Subtask confirmation state
+  const [confirming, setConfirming] = useState(false);
+  const [pendingExecution, setPendingExecution] = useState<{
+    subtasks: RoutedSubtask[];
+    conversationId: string;
+    decomposer_tokens: { prompt_tokens: number; completion_tokens: number };
+    was_decomposed: boolean;
+    originalMessage: string;
+  } | null>(null);
+  const [selectedSubtaskIndices, setSelectedSubtaskIndices] = useState<Set<number>>(new Set());
 
   // Globe state
   const [arcs, setArcs] = useState<ArcData[]>([]);
@@ -237,6 +250,8 @@ export default function ChatPage() {
     setMessages([]);
     setInput("");
     setSelectedModel(null);
+    setConfirming(false);
+    setPendingExecution(null);
   }
 
   function toggleProvider(provider: string) {
@@ -254,18 +269,17 @@ export default function ChatPage() {
     );
   }
 
-  // ── Send message ───────────────────────────────────────────────────────────
+  // ── Send message (Phase 1: decompose + route) ─────────────────────────────
 
   async function handleSend() {
     const text = input.trim();
-    if (!text || loading) return;
+    if (!text || loading || confirming) return;
 
     setInput("");
     setLoading(true);
-    isStreamingRef.current = true;
+    isStreamingRef.current = true; // prevent history reload if activeId changes
 
     const tempId = `temp-${Date.now()}`;
-    const streamingId = `streaming-${Date.now()}`;
     setMessages((prev) => [
       ...prev,
       { _id: tempId, role: "user", content: text, createdAt: new Date().toISOString() },
@@ -283,9 +297,76 @@ export default function ChatPage() {
         }),
       });
 
-      if (!res.ok || !res.body) {
+      if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         setMessages((prev) => prev.filter((m) => m._id !== tempId));
+        isStreamingRef.current = false;
+        setLoading(false);
+        alert(data.error ?? "Something went wrong");
+        return;
+      }
+
+      const phase1 = await res.json();
+      const { conversationId, userMessage, subtasks, was_decomposed, decomposer_tokens } = phase1;
+
+      // Persist conversation and replace temp user message with saved one
+      if (!activeId) setActiveId(conversationId);
+      setMessages((prev) => [...prev.filter((m) => m._id !== tempId), userMessage]);
+
+      if (was_decomposed && subtasks.length > 1) {
+        // Show confirmation card — user picks which subtasks to run
+        isStreamingRef.current = false;
+        setLoading(false);
+        setPendingExecution({ subtasks, conversationId, decomposer_tokens, was_decomposed, originalMessage: text });
+        setSelectedSubtaskIndices(new Set(subtasks.map((_: RoutedSubtask, i: number) => i)));
+        setConfirming(true);
+      } else {
+        // Single subtask — skip confirmation, fire Phase 2 immediately
+        await executeSubtasks(subtasks, conversationId, decomposer_tokens, was_decomposed, text);
+      }
+    } catch {
+      setMessages((prev) => prev.filter((m) => m._id !== tempId));
+      isStreamingRef.current = false;
+      setLoading(false);
+      alert("Something went wrong");
+    }
+  }
+
+  // ── Execute subtasks (Phase 2: dispatch + stream) ──────────────────────────
+
+  async function executeSubtasks(
+    subtasks: RoutedSubtask[],
+    conversationId: string,
+    decomposer_tokens: { prompt_tokens: number; completion_tokens: number },
+    was_decomposed: boolean,
+    originalMessage: string,
+  ) {
+    setConfirming(false);
+    setPendingExecution(null);
+    setLoading(true);
+    isStreamingRef.current = true;
+
+    const streamingId = `streaming-${Date.now()}`;
+    let outArcId: string | null = null;
+    let currentDatacenter = resolveDataCenter("gpt-4o");
+
+    try {
+      const res = await fetch("/api/chat/execute", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          selectedSubtasks: subtasks,
+          originalMessage,
+          conversationId,
+          userLat: userLocationRef.current?.lat,
+          userLng: userLocationRef.current?.lng,
+          decomposer_tokens,
+          was_decomposed,
+        }),
+      });
+
+      if (!res.ok || !res.body) {
+        const data = await res.json().catch(() => ({}));
         alert(data.error ?? "Something went wrong");
         return;
       }
@@ -293,9 +374,6 @@ export default function ChatPage() {
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
-
-      let outArcId: string | null = null;
-      let currentDatacenter = resolveDataCenter("gpt-4o");
 
       while (true) {
         const { done, value } = await reader.read();
@@ -310,13 +388,11 @@ export default function ChatPage() {
           try {
             const event = JSON.parse(line);
 
-            // ── model event ────────────────────────────────────────────────
+            // ── model event ──────────────────────────────────────────────
             if (event.type === "model") {
               setSelectedModel(event.model);
-              if (!activeId) setActiveId(event.conversationId);
               setMessages((prev) => [
-                ...prev.filter((m) => m._id !== tempId),
-                event.userMessage,
+                ...prev,
                 {
                   _id: `rightsizing-${streamingId}`,
                   role: "assistant",
@@ -333,7 +409,7 @@ export default function ChatPage() {
                 },
               ]);
 
-              // Globe: arc to the CLOSEST data center for this model
+              // Globe: arc to the closest datacenter for this model
               const loc = userLocationRef.current;
               if (loc) {
                 currentDatacenter = resolveClosestDataCenter(event.model, loc.lat, loc.lng);
@@ -368,7 +444,7 @@ export default function ChatPage() {
                 });
               }
 
-            // ── delta event ────────────────────────────────────────────────
+            // ── delta event ──────────────────────────────────────────────
             } else if (event.type === "delta") {
               setMessages((prev) =>
                 prev.map((m) =>
@@ -378,21 +454,17 @@ export default function ChatPage() {
                 ),
               );
 
-            // ── subtask_result event ───────────────────────────────────────
+            // ── subtask_result event ─────────────────────────────────────
             } else if (event.type === "subtask_result") {
-              console.log("[chat/page] subtask_result:", event.subtask);
               setMessages((prev) =>
                 prev.map((m) =>
                   m._id === streamingId
-                    ? {
-                        ...m,
-                        subtask_results: [...(m.subtask_results ?? []), event.subtask],
-                      }
+                    ? { ...m, subtask_results: [...(m.subtask_results ?? []), event.subtask] }
                     : m,
                 ),
               );
 
-            // ── done event ─────────────────────────────────────────────────
+            // ── done event ───────────────────────────────────────────────
             } else if (event.type === "done") {
               setMessages((prev) => [
                 ...prev.filter((m) => m._id !== streamingId),
@@ -435,11 +507,9 @@ export default function ChatPage() {
                 }, 1600);
               }
 
-            // ── error event ────────────────────────────────────────────────
+            // ── error event ──────────────────────────────────────────────
             } else if (event.type === "error") {
-              setMessages((prev) =>
-                prev.filter((m) => m._id !== tempId && m._id !== streamingId),
-              );
+              setMessages((prev) => prev.filter((m) => m._id !== streamingId));
               if (outArcId) setArcs((prev) => prev.filter((a) => a.id !== outArcId));
               alert(event.error ?? "Something went wrong");
             }
@@ -452,6 +522,20 @@ export default function ChatPage() {
       isStreamingRef.current = false;
       setLoading(false);
     }
+  }
+
+  // ── Confirm selected subtasks ───────────────────────────────────────────────
+
+  async function handleConfirmSubtasks() {
+    if (!pendingExecution || selectedSubtaskIndices.size === 0) return;
+    const selected = pendingExecution.subtasks.filter((_, i) => selectedSubtaskIndices.has(i));
+    await executeSubtasks(
+      selected,
+      pendingExecution.conversationId,
+      pendingExecution.decomposer_tokens,
+      pendingExecution.was_decomposed,
+      pendingExecution.originalMessage,
+    );
   }
 
   function formatTime(iso: string) {
@@ -497,7 +581,7 @@ export default function ChatPage() {
             {conversations.map((conv) => (
               <button
                 key={conv._id}
-                onClick={() => setActiveId(conv._id)}
+                onClick={() => { setConfirming(false); setPendingExecution(null); setActiveId(conv._id); }}
                 className={cn(
                   "w-full text-left px-3 py-2 rounded-md text-sm transition-colors",
                   "hover:bg-accent hover:text-accent-foreground",
@@ -645,6 +729,75 @@ export default function ChatPage() {
               );
             })}
 
+            {/* Subtask confirmation card */}
+            {confirming && pendingExecution && (
+              <div className="flex gap-3">
+                <Avatar className="w-8 h-8 shrink-0 mt-0.5">
+                  <AvatarFallback className="bg-primary text-primary-foreground text-xs">
+                    <BotIcon className="w-4 h-4" />
+                  </AvatarFallback>
+                </Avatar>
+                <div className="flex flex-col gap-1 max-w-[85%] items-start">
+                  <div className="bg-muted rounded-2xl rounded-tl-sm px-4 py-3 text-sm w-full">
+                    <p className="font-medium mb-3 text-foreground">
+                      I split this into {pendingExecution.subtasks.length} subtasks. Select which to run:
+                    </p>
+                    <div className="flex flex-col gap-3">
+                      {pendingExecution.subtasks.map((st, i) => (
+                        <label key={i} className="flex items-start gap-3 cursor-pointer">
+                          <Checkbox
+                            checked={selectedSubtaskIndices.has(i)}
+                            onCheckedChange={(checked) =>
+                              setSelectedSubtaskIndices((prev) => {
+                                const next = new Set(prev);
+                                if (checked) next.add(i);
+                                else next.delete(i);
+                                return next;
+                              })
+                            }
+                            className="mt-0.5 shrink-0"
+                          />
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-1.5 flex-wrap mb-1">
+                              <Badge
+                                variant="outline"
+                                className={cn(
+                                  "text-[10px] px-1.5 py-0 h-4",
+                                  st.type === "REASON" && "border-blue-400/50 text-blue-400",
+                                  st.type === "WRITE" && "border-green-400/50 text-green-400",
+                                  st.type === "SEARCH" && "border-orange-400/50 text-orange-400",
+                                )}
+                              >
+                                {st.type}
+                              </Badge>
+                              <span className="text-[10px] text-muted-foreground">
+                                diff {st.difficulty}
+                              </span>
+                              <span className="text-[10px] text-muted-foreground">·</span>
+                              <span className="text-[10px] text-muted-foreground font-medium">
+                                {st.model_id}
+                              </span>
+                            </div>
+                            <p className="text-xs text-muted-foreground leading-relaxed line-clamp-2">
+                              {st.prompt}
+                            </p>
+                          </div>
+                        </label>
+                      ))}
+                    </div>
+                    <Button
+                      size="sm"
+                      className="mt-4 w-full"
+                      disabled={selectedSubtaskIndices.size === 0}
+                      onClick={handleConfirmSubtasks}
+                    >
+                      Run {selectedSubtaskIndices.size} of {pendingExecution.subtasks.length} subtask{selectedSubtaskIndices.size !== 1 ? "s" : ""}
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            )}
+
             {/* Typing dots — only while waiting for the first stream event */}
             {loading && !isStreaming && (
               <div className="flex gap-3">
@@ -681,10 +834,10 @@ export default function ChatPage() {
               onChange={(e) => setInput(e.target.value)}
               placeholder="Message..."
               className="flex-1"
-              disabled={loading}
+              disabled={loading || confirming}
               autoFocus
             />
-            <Button type="submit" disabled={!input.trim() || loading} size="icon">
+            <Button type="submit" disabled={!input.trim() || loading || confirming} size="icon">
               {loading ? (
                 <LoaderIcon className="w-4 h-4 animate-spin" />
               ) : (
