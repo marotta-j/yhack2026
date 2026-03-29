@@ -174,6 +174,12 @@ export async function POST(req: Request) {
         }
       }
 
+      // Back-fill token count onto the user message now that we have usage data
+      await Message.findByIdAndUpdate(userMessage._id, {
+        promptTokens: usage.prompt_tokens ?? 0,
+        totalTokens: usage.prompt_tokens ?? 0,
+      });
+
       // Save assistant message
       const assistantMessage = await Message.create({
         conversationId: conversationRef._id,
@@ -192,7 +198,14 @@ export async function POST(req: Request) {
       });
 
       controller.enqueue(
-        enc.encode(JSON.stringify({ type: "done", assistantMessage }) + "\n"),
+        enc.encode(
+          JSON.stringify({
+            type: "done",
+            assistantMessage,
+            userMessageId: userMessage._id.toString(),
+            userMessageTokens: usage.prompt_tokens ?? 0,
+          }) + "\n",
+        ),
       );
       controller.close();
     },

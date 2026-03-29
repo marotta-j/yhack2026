@@ -19,6 +19,7 @@ import {
   LayersIcon,
   ChevronDownIcon,
   ChevronUpIcon,
+  TrashIcon,
 } from "lucide-react";
 import Link from "next/link";
 import { GlobeView, ArcData, MarkerData } from "@/components/Globe/GlobeView";
@@ -89,6 +90,12 @@ export default function ChatPage() {
   const [selectedModel, setSelectedModel] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const isStreamingRef = useRef(false);
+
+  // Per-conversation globe snapshots (static arcs + active DC markers)
+  const convGlobeRef = useRef<Record<string, { arcs: ArcData[]; dcMarkers: MarkerData[] }>>({});
+  const prevActiveIdRef = useRef<string | null>(null);
+  // Tracks which conversation ID is currently being streamed (may differ from activeId)
+  const streamingConvIdRef = useRef<string | null>(null);
 
   // Globe state
   const [arcs, setArcs] = useState<ArcData[]>([]);
@@ -175,6 +182,57 @@ export default function ChatPage() {
     setLocationOverride(null);
   }
 
+  // ── Save/restore per-conversation globe state when active conversation changes ─
+  useEffect(() => {
+    // Snapshot the outgoing conversation's globe state (arcs/markers captured at
+    // the moment activeId changes, before any clearing happens)
+    const leavingId = prevActiveIdRef.current;
+    if (leavingId) {
+      convGlobeRef.current[leavingId] = {
+        arcs: arcs.filter((a) => a.static),
+        dcMarkers: markers.filter((m) => m.id.startsWith("dc-")),
+      };
+    }
+    prevActiveIdRef.current = activeId;
+
+    if (!activeId) {
+      setArcs([]);
+      setMarkers((prev) => prev.filter((m) => m.id === "user"));
+      return;
+    }
+
+    // Don't restore globe state mid-stream — the in-flight arcs are already correct
+    if (isStreamingRef.current) return;
+
+    const saved = convGlobeRef.current[activeId];
+    if (saved) {
+      // Already cached in this session — restore immediately
+      setArcs(saved.arcs);
+      setMarkers((prev) => {
+        const userMarker = prev.find((m) => m.id === "user");
+        return userMarker ? [...saved.dcMarkers, userMarker] : [...saved.dcMarkers];
+      });
+    } else {
+      // Not in memory (page refresh) — load from DB
+      let cancelled = false;
+      fetch(`/api/conversations/${activeId}`)
+        .then((r) => r.json())
+        .then((conv) => {
+          if (cancelled) return;
+          const state: { arcs: ArcData[]; dcMarkers: MarkerData[] } =
+            conv.globeState ?? { arcs: [], dcMarkers: [] };
+          convGlobeRef.current[activeId] = state;
+          setArcs(state.arcs);
+          setMarkers((prev) => {
+            const userMarker = prev.find((m) => m.id === "user");
+            return userMarker ? [...state.dcMarkers, userMarker] : [...state.dcMarkers];
+          });
+        })
+        .catch(() => {});
+      return () => { cancelled = true; };
+    }
+  }, [activeId]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // ── Load messages when active conversation changes ──────────────────────────
   useEffect(() => {
     if (!activeId) {
@@ -189,6 +247,24 @@ export default function ChatPage() {
       .finally(() => setLoadingMessages(false));
   }, [activeId]);
 
+  // ── Persist globe state to DB after each message completes ─────────────────
+  // Runs when `loading` transitions false → captures the arcs/markers from that
+  // render (which already include the new static arc added during the "done" event).
+  useEffect(() => {
+    if (loading) return;
+    const convId = streamingConvIdRef.current;
+    if (!convId) return;
+    const staticArcs = arcs.filter((a) => a.static);
+    const dcMarkers = markers.filter((m) => m.id.startsWith("dc-"));
+    const state = { arcs: staticArcs, dcMarkers };
+    convGlobeRef.current[convId] = state; // keep in-memory cache in sync
+    fetch(`/api/conversations/${convId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ globeState: state }),
+    }).catch(() => {});
+  }, [loading]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // ── Scroll to bottom on new messages ───────────────────────────────────────
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -202,7 +278,7 @@ export default function ChatPage() {
       lng: d.lng,
       color: d.color,
       label: `${d.name} — ${d.provider}${d.region ? ` (${d.region})` : ""}`,
-      radius: 0.22,
+      radius: 0.28,
       altitude: 0.004,
       pulse: false,
     }));
@@ -219,6 +295,17 @@ export default function ChatPage() {
     const res = await fetch("/api/conversations");
     const data = await res.json();
     setConversations(data);
+  }
+
+  async function deleteConversation(id: string, e: React.MouseEvent) {
+    e.stopPropagation();
+    await fetch(`/api/conversations/${id}`, { method: "DELETE" });
+    delete convGlobeRef.current[id];
+    setConversations((prev) => prev.filter((c) => c._id !== id));
+    if (activeId === id) {
+      setActiveId(null);
+      setMessages([]);
+    }
   }
 
   async function handleNewChat() {
@@ -297,6 +384,7 @@ export default function ChatPage() {
             // ── model event ────────────────────────────────────────────────
             if (event.type === "model") {
               setSelectedModel(event.model);
+              streamingConvIdRef.current = event.conversationId;
               if (!activeId) setActiveId(event.conversationId);
               setMessages((prev) => [
                 ...prev.filter((m) => m._id !== tempId),
@@ -365,7 +453,13 @@ export default function ChatPage() {
             // ── done event ─────────────────────────────────────────────────
             } else if (event.type === "done") {
               setMessages((prev) => [
-                ...prev.filter((m) => m._id !== streamingId),
+                ...prev
+                  .filter((m) => m._id !== streamingId)
+                  .map((m) =>
+                    m._id === event.userMessageId
+                      ? { ...m, totalTokens: event.userMessageTokens }
+                      : m,
+                  ),
                 event.assistantMessage,
               ]);
               fetchConversations();
@@ -460,25 +554,36 @@ export default function ChatPage() {
         <div className="flex-1 min-h-0 overflow-y-auto px-2">
           <div className="space-y-1 pb-2">
             {conversations.map((conv) => (
-              <button
+              <div
                 key={conv._id}
-                onClick={() => setActiveId(conv._id)}
                 className={cn(
-                  "w-full text-left px-3 py-2 rounded-md text-sm transition-colors",
+                  "group relative flex items-center rounded-md text-sm transition-colors",
                   "hover:bg-accent hover:text-accent-foreground",
                   activeId === conv._id
                     ? "bg-accent text-accent-foreground"
                     : "text-muted-foreground",
                 )}
               >
-                <div className="flex items-center gap-2">
-                  <MessageSquareIcon className="w-3.5 h-3.5 shrink-0" />
-                  <span className="truncate">{conv.title}</span>
-                </div>
-                <p className="text-xs text-muted-foreground mt-0.5 pl-5">
-                  {conv.messageCount} messages
-                </p>
-              </button>
+                <button
+                  onClick={() => setActiveId(conv._id)}
+                  className="flex-1 text-left px-3 py-2 min-w-0"
+                >
+                  <div className="flex items-center gap-2">
+                    <MessageSquareIcon className="w-3.5 h-3.5 shrink-0" />
+                    <span className="truncate">{conv.title}</span>
+                  </div>
+                  <p className="text-xs text-muted-foreground mt-0.5 pl-5">
+                    {conv.messageCount} messages
+                  </p>
+                </button>
+                <button
+                  onClick={(e) => deleteConversation(conv._id, e)}
+                  className="shrink-0 p-1.5 mr-1 rounded opacity-0 group-hover:opacity-100 hover:text-destructive transition-opacity"
+                  aria-label="Delete conversation"
+                >
+                  <TrashIcon className="w-3.5 h-3.5" />
+                </button>
+              </div>
             ))}
           </div>
         </div>
@@ -665,7 +770,7 @@ export default function ChatPage() {
 
       {/* ── Globe panel ──────────────────────────────────────────────────────── */}
       <div className="flex-1 bg-black relative overflow-hidden">
-        <GlobeView arcs={arcs} markers={allMarkers} autoRotate />
+        <GlobeView arcs={arcs} markers={allMarkers} autoRotate initialPointOfView={userLocation ?? undefined} />
 
         {/* ── Provider toggle panel ───────────────────────────────────────── */}
         <div className="absolute top-4 right-4 z-10 w-52">
@@ -777,7 +882,7 @@ export default function ChatPage() {
 
         {/* ── Active routing legend ──────────────────────────────────────────── */}
         {loading && activeDc && (
-          <div className="absolute bottom-4 left-1/2 -translate-x-1/2 flex gap-3 bg-black/60 backdrop-blur-sm rounded-full px-4 py-2 text-xs text-white pointer-events-none">
+          <div className="absolute bottom-4 left-80 flex gap-3 bg-black/60 backdrop-blur-sm rounded-full px-4 py-2 text-xs text-white pointer-events-none">
             <span className="flex items-center gap-1.5">
               <span
                 className="w-2 h-2 rounded-full animate-pulse"
