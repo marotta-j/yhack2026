@@ -176,6 +176,9 @@ export default function ChatPage() {
   // Quick stats for sidebar widget
   const [quickStats, setQuickStats] = useState<{ totalCarbonCost: number; totalCarbonSaved: number } | null>(null);
 
+  // Which assistant message's arc is highlighted on the globe (null = all shown)
+  const [selectedMessageId, setSelectedMessageId] = useState<string | null>(null);
+
   /** True geolocation from /api/geolocate (your IP). */
   const [realLocation, setRealLocation] = useState<ResolvedGeo | null>(null);
   /** Optional spoof — persisted in localStorage, drives pin + routing. */
@@ -285,6 +288,7 @@ export default function ChatPage() {
     }
     prevActiveIdRef.current = activeId;
 
+    setSelectedMessageId(null);
     if (!activeId) {
       setArcs([]);
       setMarkers((prev) => prev.filter((m) => m.id === "user"));
@@ -401,6 +405,16 @@ export default function ChatPage() {
     () => [...bgDcMarkers, ...markers],
     [bgDcMarkers, markers],
   );
+
+  // ── Dim arcs that don't belong to the selected message ────────────────────
+  const combinedArcs = useMemo<ArcData[]>(() => {
+    if (!selectedMessageId) return arcs;
+    return arcs.map((arc) =>
+      !arc.static || arc.messageId === selectedMessageId
+        ? arc
+        : { ...arc, color: "#3a3a3a" },
+    );
+  }, [arcs, selectedMessageId]);
 
   // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -709,6 +723,7 @@ export default function ChatPage() {
                     endLng: dc.lng,
                     color: dc.color,
                     static: true,
+                    messageId: event.assistantMessage._id,
                   });
                   staticArcs.push({
                     id: inArcId,
@@ -1019,12 +1034,18 @@ export default function ChatPage() {
                 );
               }
 
+              const isSelected = selectedMessageId === msg._id;
+              const isClickable = msg.role === "assistant" && !msg.streaming;
+
               return (
                 <div
                   key={msg._id}
+                  onClick={isClickable ? () => setSelectedMessageId(isSelected ? null : msg._id) : undefined}
                   className={cn(
                     "flex gap-3",
                     msg.role === "user" ? "flex-row-reverse" : "flex-row",
+                    isClickable && "cursor-pointer",
+                    isSelected && "rounded-xl ring-1 ring-primary/40 bg-primary/5",
                   )}
                 >
                   <Avatar className="w-8 h-8 shrink-0 mt-0.5">
@@ -1290,7 +1311,7 @@ export default function ChatPage() {
 
       {/* ── Globe panel ──────────────────────────────────────────────────────── */}
       <div className="flex-1 bg-black relative overflow-hidden">
-        <GlobeView arcs={arcs} markers={allMarkers} autoRotate initialPointOfView={userLocation ?? undefined} />
+        <GlobeView arcs={combinedArcs} markers={allMarkers} autoRotate initialPointOfView={userLocation ?? undefined} />
 
         {/* ── Provider toggle panel (high z: above globe CSS2D labels / canvas) ─ */}
         <div className="absolute top-4 right-4 z-[1000] w-52 pointer-events-auto">
