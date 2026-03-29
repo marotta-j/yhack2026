@@ -76,6 +76,10 @@ interface Message {
   createdAt: string;
   streaming?: boolean;
   rightsizingModel?: string;
+  /** Present on per-subtask rightsizing rows when was_decomposed=true */
+  subtaskIndex?: number;
+  subtaskType?: string;
+  subtaskDifficulty?: number;
   carbon_report?: CarbonReport;
   /** Carbon cost in gCO₂ — prompt carbon for user messages, total carbon for assistant messages */
   carbon_cost?: number;
@@ -561,6 +565,8 @@ export default function ChatPage() {
     const streamingId = `streaming-${Date.now()}`;
     let outArcIds: string[] = [];
     let currentDatacenters: ReturnType<typeof resolveClosestDataCenter>[] = [];
+    let isMultiSubtask = false;
+    let subtaskResultIndex = 0;
 
     try {
       const res = await fetch("/api/chat/execute", {
@@ -604,23 +610,29 @@ export default function ChatPage() {
             if (event.type === "model") {
               setSelectedModel(event.model);
               streamingConvIdRef.current = conversationId;
-              setMessages((prev) => [
-                ...prev,
-                {
-                  _id: `rightsizing-${streamingId}`,
-                  role: "assistant",
-                  content: "",
-                  rightsizingModel: event.model,
-                  createdAt: new Date().toISOString(),
-                },
-                {
+              isMultiSubtask = !!(event.was_decomposed && event.subtask_count > 1);
+              setMessages((prev) => {
+                const toAdd: Message[] = [];
+                // For single-subtask prompts, show the upfront rightsizing row immediately.
+                // For multi-subtask, individual rows are inserted per subtask_result event.
+                if (!isMultiSubtask) {
+                  toAdd.push({
+                    _id: `rightsizing-${streamingId}`,
+                    role: "assistant",
+                    content: "",
+                    rightsizingModel: event.model,
+                    createdAt: new Date().toISOString(),
+                  });
+                }
+                toAdd.push({
                   _id: streamingId,
                   role: "assistant",
                   content: "",
                   streaming: true,
                   createdAt: new Date().toISOString(),
-                },
-              ]);
+                });
+                return [...prev, ...toAdd];
+              });
 
               // Globe: draw simultaneous arcs to all subtask datacenters
               const loc = userLocationRef.current;
@@ -680,6 +692,25 @@ export default function ChatPage() {
 
             // ── subtask_result event ─────────────────────────────────────
             } else if (event.type === "subtask_result") {
+              subtaskResultIndex++;
+              if (isMultiSubtask) {
+                const rowId = `rightsizing-sub-${streamingId}-${subtaskResultIndex}`;
+                setMessages((prev) => {
+                  const idx = prev.findIndex((m) => m._id === streamingId);
+                  const row: Message = {
+                    _id: rowId,
+                    role: "assistant",
+                    content: "",
+                    rightsizingModel: event.subtask.model_id,
+                    subtaskIndex: subtaskResultIndex,
+                    subtaskType: event.subtask.type,
+                    subtaskDifficulty: event.subtask.difficulty,
+                    createdAt: new Date().toISOString(),
+                  };
+                  if (idx === -1) return [...prev, row];
+                  return [...prev.slice(0, idx), row, ...prev.slice(idx)];
+                });
+              }
               setMessages((prev) =>
                 prev.map((m) =>
                   m._id === streamingId
@@ -994,16 +1025,33 @@ export default function ChatPage() {
 
             {messages.map((msg) => {
               if (msg.rightsizingModel) {
+                const isPerSubtask = msg.subtaskIndex !== undefined;
                 return (
                   <div key={msg._id} className="flex items-center justify-center gap-2">
                     <ZapIcon className="w-3 h-3 text-muted-foreground" />
-                    <span className="text-xs text-muted-foreground">
-                      Rightsizing:{" "}
-                      <span className="font-medium text-foreground">
-                        {msg.rightsizingModel}
-                      </span>{" "}
-                      selected for this prompt
-                    </span>
+                    {isPerSubtask ? (
+                      <span className="text-xs text-muted-foreground">
+                        Subtask {msg.subtaskIndex}:{" "}
+                        <span className="font-medium text-foreground">{msg.rightsizingModel}</span>
+                        {msg.subtaskType && (
+                          <span> · <span className={cn(
+                            "font-medium",
+                            msg.subtaskType === "REASON" && "text-blue-400",
+                            msg.subtaskType === "WRITE"  && "text-green-400",
+                            msg.subtaskType === "SEARCH" && "text-orange-400",
+                          )}>{msg.subtaskType}</span></span>
+                        )}
+                        {msg.subtaskDifficulty != null && (
+                          <span className="text-muted-foreground"> · difficulty {msg.subtaskDifficulty}</span>
+                        )}
+                      </span>
+                    ) : (
+                      <span className="text-xs text-muted-foreground">
+                        Rightsizing:{" "}
+                        <span className="font-medium text-foreground">{msg.rightsizingModel}</span>
+                        {" "}selected for this prompt
+                      </span>
+                    )}
                   </div>
                 );
               }
