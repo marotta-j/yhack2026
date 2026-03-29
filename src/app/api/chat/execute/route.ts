@@ -287,21 +287,6 @@ export async function POST(req: Request) {
           }) + "\n"),
         );
 
-        const assistantMessage = await Message.create({
-          conversationId,
-          role: "assistant",
-          content: fullContent,
-          promptTokens: usage.prompt_tokens ?? 0,
-          completionTokens: usage.completion_tokens ?? 0,
-          totalTokens: usage.total_tokens ?? 0,
-        });
-
-        await SubtaskDocumentModel.create({
-          messageId: assistantMessage._id,
-          conversationId,
-          ...allResults[0],
-        });
-
         const totalTokens =
           usage.total_tokens +
           decomposer_tokens.prompt_tokens +
@@ -318,6 +303,24 @@ export async function POST(req: Request) {
           userLat,
           userLng,
         );
+
+        const assistantMessage = await Message.create({
+          conversationId,
+          role: "assistant",
+          content: fullContent,
+          promptTokens: usage.prompt_tokens ?? 0,
+          completionTokens: usage.completion_tokens ?? 0,
+          totalTokens: usage.total_tokens ?? 0,
+          carbonCost: carbonReport.total_carbon,
+          naiveBaseline: carbonReport.naive_baseline,
+          carbonDelta: carbonReport.delta,
+        });
+
+        await SubtaskDocumentModel.create({
+          messageId: assistantMessage._id,
+          conversationId,
+          ...allResults[0],
+        });
 
         const isFirstMessage = conversation.messageCount === 0;
         await Conversation.findByIdAndUpdate(conversationId, {
@@ -394,6 +397,23 @@ export async function POST(req: Request) {
           reconstructor_tokens.prompt_tokens +
           reconstructor_tokens.completion_tokens;
 
+        const orchDc = resolveClosestDataCenter("gemini-2.0-flash", userLat, userLng);
+        const orchGridCarbon = await getGridCarbonIntensity(orchDc.lat, orchDc.lng, orchDc.zone);
+        const naiveBaseline = await calculateNaiveBaseline(
+          totalSubtaskTokens + totalOrchTokens,
+          userLat,
+          userLng,
+        );
+        const carbonReport = buildCarbonReport(
+          allResults,
+          totalOrchTokens,
+          "gemini-2.0-flash",
+          orchGridCarbon,
+          naiveBaseline,
+          userLat,
+          userLng,
+        );
+
         const assistantMessage = await Message.create({
           conversationId,
           role: "assistant",
@@ -401,6 +421,9 @@ export async function POST(req: Request) {
           promptTokens: 0,
           completionTokens: 0,
           totalTokens: totalSubtaskTokens + totalOrchTokens,
+          carbonCost: carbonReport.total_carbon,
+          naiveBaseline: carbonReport.naive_baseline,
+          carbonDelta: carbonReport.delta,
         });
 
         await SubtaskDocumentModel.insertMany(
@@ -421,23 +444,6 @@ export async function POST(req: Request) {
             completion_tokens: r.completion_tokens,
             carbon_cost: r.carbon_cost,
           })),
-        );
-
-        const orchDc = resolveClosestDataCenter("gemini-2.0-flash", userLat, userLng);
-        const orchGridCarbon = await getGridCarbonIntensity(orchDc.lat, orchDc.lng, orchDc.zone);
-        const naiveBaseline = await calculateNaiveBaseline(
-          totalSubtaskTokens + totalOrchTokens,
-          userLat,
-          userLng,
-        );
-        const carbonReport = buildCarbonReport(
-          allResults,
-          totalOrchTokens,
-          "gemini-2.0-flash",
-          orchGridCarbon,
-          naiveBaseline,
-          userLat,
-          userLng,
         );
 
         const isFirstMessage = conversation.messageCount === 0;

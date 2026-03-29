@@ -7,6 +7,9 @@ export interface IMessage extends Document {
   promptTokens: number;
   completionTokens: number;
   totalTokens: number;
+  carbonCost: number;
+  naiveBaseline: number;
+  carbonDelta: number;
   createdAt: Date;
 }
 
@@ -18,6 +21,9 @@ const MessageSchema = new Schema<IMessage>(
     promptTokens: { type: Number, default: 0 },
     completionTokens: { type: Number, default: 0 },
     totalTokens: { type: Number, default: 0 },
+    carbonCost: { type: Number, default: 0 },
+    naiveBaseline: { type: Number, default: 0 },
+    carbonDelta: { type: Number, default: 0 },
   },
   { timestamps: true }
 );

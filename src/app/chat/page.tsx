@@ -73,6 +73,10 @@ interface Message {
   carbon_report?: CarbonReport;
   /** Carbon cost in gCO₂ — prompt carbon for user messages, total carbon for assistant messages */
   carbon_cost?: number;
+  /** Persisted carbon fields from DB (camelCase from Mongoose) */
+  carbonCost?: number;
+  naiveBaseline?: number;
+  carbonDelta?: number;
   was_decomposed?: boolean;
   subtask_count?: number;
   subtask_results?: SubtaskMeta[];
@@ -913,7 +917,7 @@ export default function ChatPage() {
                           </span>
                         )}
                         {(() => {
-                          const carbon = msg.carbon_cost ?? msg.carbon_report?.total_carbon;
+                          const carbon = msg.carbon_cost ?? msg.carbon_report?.total_carbon ?? msg.carbonCost;
                           return carbon != null && carbon > 0 ? (
                             <span className="text-xs text-muted-foreground">
                               · {formatCarbon(carbon)}
