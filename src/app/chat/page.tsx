@@ -76,6 +76,7 @@ interface SubtaskPanelSnapshot {
   subtasks: RoutedSubtask[];
   subtaskResults: (SubtaskMeta | undefined)[];
   difficultyScore: number;
+  orchestrationCarbon?: { difficulty?: number; decomposition?: number; reconstruction?: number };
 }
 
 interface Message {
@@ -230,6 +231,7 @@ export default function ChatPage() {
     conversationId: string;
     decomposer_tokens: { prompt_tokens: number; completion_tokens: number };
     difficulty_scorer_tokens: { prompt_tokens: number; completion_tokens: number };
+    difficulty_prompt_carbon: number;
     was_decomposed: boolean;
     originalMessage: string;
   } | null>(null);
@@ -613,12 +615,12 @@ export default function ChatPage() {
         isStreamingRef.current = false;
         setLoading(false);
         setActiveDifficultyScore(difficultyScore ?? 0);
-        setPendingExecution({ subtasks, conversationId, decomposer_tokens, difficulty_scorer_tokens: { prompt_tokens: difficulty_prompt_tokens ?? 0, completion_tokens: 0 }, was_decomposed, originalMessage: text });
+        setPendingExecution({ subtasks, conversationId, decomposer_tokens, difficulty_scorer_tokens: { prompt_tokens: difficulty_prompt_tokens ?? 0, completion_tokens: 0 }, difficulty_prompt_carbon: difficulty_prompt_carbon ?? 0, was_decomposed, originalMessage: text });
         setSelectedSubtaskIndices(new Set(subtasks.map((_: RoutedSubtask, i: number) => i)));
         setConfirming(true);
       } else {
         // Single subtask — skip confirmation, fire Phase 2 immediately
-        await executeSubtasks(subtasks, conversationId, decomposer_tokens, { prompt_tokens: difficulty_prompt_tokens ?? 0, completion_tokens: 0 }, was_decomposed, text, difficultyScore ?? 0);
+        await executeSubtasks(subtasks, conversationId, decomposer_tokens, { prompt_tokens: difficulty_prompt_tokens ?? 0, completion_tokens: 0 }, difficulty_prompt_carbon ?? 0, was_decomposed, text, difficultyScore ?? 0);
       }
     } catch {
       setMessages((prev) => prev.filter((m) => m._id !== tempId));
@@ -635,6 +637,7 @@ export default function ChatPage() {
     conversationId: string,
     decomposer_tokens: { prompt_tokens: number; completion_tokens: number },
     difficulty_scorer_tokens: { prompt_tokens: number; completion_tokens: number },
+    difficulty_prompt_carbon: number,
     was_decomposed: boolean,
     originalMessage: string,
     difficultyScore: number = 0,
@@ -674,6 +677,7 @@ export default function ChatPage() {
           userLng: userLocationRef.current?.lng,
           decomposer_tokens,
           difficulty_scorer_tokens,
+          difficulty_prompt_carbon,
           was_decomposed,
         }),
       });
@@ -861,6 +865,7 @@ export default function ChatPage() {
                   subtasks,
                   subtaskResults: localSubtaskResults,
                   difficultyScore,
+                  orchestrationCarbon: event.orchestration_carbon,
                 };
                 setSubtaskSnapshots((prev) => {
                   const next = new Map(prev);
@@ -922,6 +927,7 @@ export default function ChatPage() {
       pendingExecution.conversationId,
       pendingExecution.decomposer_tokens,
       pendingExecution.difficulty_scorer_tokens,
+      pendingExecution.difficulty_prompt_carbon,
       pendingExecution.was_decomposed,
       pendingExecution.originalMessage,
       activeDifficultyScore,
@@ -1278,6 +1284,7 @@ export default function ChatPage() {
                               subtaskResults={snap.subtaskResults}
                               reconstructionState="complete"
                               difficultyScore={snap.difficultyScore}
+                              orchestrationCarbon={snap.orchestrationCarbon}
                               visible={true}
                             />
                           )}

@@ -16,6 +16,12 @@ interface SubtaskMeta {
   carbon_cost?: number;
 }
 
+interface OrchestrationCarbon {
+  difficulty?: number;
+  decomposition?: number;
+  reconstruction?: number;
+}
+
 interface SubtaskPanelProps {
   subtasks: RoutedSubtask[];
   subtaskStates: SubtaskState[];
@@ -23,6 +29,7 @@ interface SubtaskPanelProps {
   reconstructionState: SubtaskState;
   difficultyScore: number;
   visible: boolean;
+  orchestrationCarbon?: OrchestrationCarbon;
 }
 
 function formatCarbon(g: number): string {
@@ -37,10 +44,12 @@ function OrchestraRow({
   label,
   sublabel,
   state,
+  carbon_cost,
 }: {
   label: string;
   sublabel?: string;
   state: SubtaskState;
+  carbon_cost?: number;
 }) {
   const isRunning = state === "running";
   const isComplete = state === "complete";
@@ -78,11 +87,13 @@ function OrchestraRow({
         )}
       </div>
 
-      {/* Right */}
-      <div className="shrink-0">
-        {!isRunning && !isComplete && !isError && (
+      {/* Right: carbon when complete, otherwise queued indicator */}
+      <div className="shrink-0 text-right">
+        {isComplete && carbon_cost != null ? (
+          <span className="text-xs text-white/30">{formatCarbon(carbon_cost)} CO₂</span>
+        ) : !isRunning && !isComplete && !isError ? (
           <span className="text-xs text-white/20">Queued</span>
-        )}
+        ) : null}
       </div>
     </div>
   );
@@ -95,6 +106,7 @@ export function SubtaskPanel({
   reconstructionState,
   difficultyScore,
   visible,
+  orchestrationCarbon,
 }: SubtaskPanelProps) {
   const [collapsed, setCollapsed] = useState(false);
 
@@ -127,6 +139,7 @@ export function SubtaskPanel({
             label="Difficulty Rating"
             sublabel={`Score: ${difficultyScore} / 20`}
             state="complete"
+            carbon_cost={orchestrationCarbon?.difficulty}
           />
 
           {/* ── Orchestration: Deconstruction ── */}
@@ -134,6 +147,7 @@ export function SubtaskPanel({
             label="Deconstruction"
             sublabel={`${subtasks.length} subtasks identified`}
             state="complete"
+            carbon_cost={orchestrationCarbon?.decomposition}
           />
 
           {/* ── Subtask rows ── */}
@@ -225,6 +239,7 @@ export function SubtaskPanel({
             label="Reconstruction"
             sublabel="Synthesizing subtask outputs"
             state={reconstructionState}
+            carbon_cost={orchestrationCarbon?.reconstruction}
           />
         </div>
       )}
